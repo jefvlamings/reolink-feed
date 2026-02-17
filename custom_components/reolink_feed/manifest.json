@@ -1,0 +1,12 @@
+{
+  "domain": "reolink_feed",
+  "name": "Reolink Feed",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/example/reolink-feed",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "0.1.0"
+}

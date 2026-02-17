@@ -1,0 +1,14 @@
+{
+  "title": "Reolink Feed",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Reolink Feed",
+        "description": "Add the Reolink Feed integration."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single Reolink Feed instance is allowed."
+    }
+  }
+}
