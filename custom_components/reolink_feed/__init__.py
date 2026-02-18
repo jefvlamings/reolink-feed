@@ -55,15 +55,12 @@ def _async_register_ws_commands(hass: HomeAssistant) -> None:
 
 
 @websocket_api.websocket_command(
-    websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend(
-        {
-            vol.Required("type"): "reolink_feed/list",
-            vol.Optional("since_hours", default=24): cv.positive_int,
-            vol.Optional("limit", default=200): cv.positive_int,
-            vol.Optional("labels", default=["person", "animal"]): [cv.string],
-        },
-        extra=vol.PREVENT_EXTRA,
-    )
+    {
+        "type": "reolink_feed/list",
+        vol.Optional("since_hours", default=24): cv.positive_int,
+        vol.Optional("limit", default=200): cv.positive_int,
+        vol.Optional("labels", default=["person", "animal"]): [cv.string],
+    }
 )
 @websocket_api.async_response
 async def ws_list_items(
