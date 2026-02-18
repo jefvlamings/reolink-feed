@@ -9,7 +9,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._loading = false;
     this._refreshTimer = null;
     this._resolvingIds = new Set();
-    this._modal = { open: false, title: "", url: "", mime: "" };
+    this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this.attachShadow({ mode: "open" });
   }
 
@@ -93,10 +93,12 @@ class ReolinkFeedCard extends HTMLElement {
     }
   }
 
-  async _refreshRecording(item, showToast = true) {
+  async _refreshRecording(item, showToast = true, showSpinner = true) {
     if (!this._hass || !item?.id) return item?.recording || null;
-    this._resolvingIds.add(item.id);
-    this._render();
+    if (showSpinner) {
+      this._resolvingIds.add(item.id);
+      this._render();
+    }
     try {
       const recording = await this._hass.callWS({
         type: "reolink_feed/resolve_recording",
@@ -113,15 +115,26 @@ class ReolinkFeedCard extends HTMLElement {
       this._showToast(`Resolve failed: ${err?.message || err}`);
       return null;
     } finally {
-      this._resolvingIds.delete(item.id);
-      this._render();
+      if (showSpinner) {
+        this._resolvingIds.delete(item.id);
+        this._render();
+      }
     }
   }
 
   async _openFromThumbnail(item) {
     if (!this._hass) return;
-    const recording = await this._refreshRecording(item, false);
+    const recording = await this._refreshRecording(item, false, false);
     if (!recording || recording.status !== "linked" || !recording.media_content_id) {
+      if (item?.snapshot_url) {
+        this._openModal(
+          `${item.camera_name} · snapshot`,
+          item.snapshot_url,
+          "image/jpeg",
+          "image"
+        );
+        return;
+      }
       this._showToast("Clip not ready yet");
       return;
     }
@@ -135,19 +148,24 @@ class ReolinkFeedCard extends HTMLElement {
         this._showToast("Could not resolve media URL");
         return;
       }
-      this._openModal(`${item.camera_name} · ${item.label}`, resolved.url, resolved.mime_type || "video/mp4");
+      this._openModal(
+        `${item.camera_name} · ${item.label}`,
+        resolved.url,
+        resolved.mime_type || "video/mp4",
+        "video"
+      );
     } catch (err) {
       this._showToast(`Open failed: ${err?.message || err}`);
     }
   }
 
-  _openModal(title, url, mime) {
-    this._modal = { open: true, title, url, mime };
+  _openModal(title, url, mime, kind = "video") {
+    this._modal = { open: true, title, url, mime, kind };
     this._render();
   }
 
   _closeModal() {
-    this._modal = { open: false, title: "", url: "", mime: "" };
+    this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this._render();
   }
 
@@ -158,6 +176,36 @@ class ReolinkFeedCard extends HTMLElement {
     });
     event.detail = { message };
     this.dispatchEvent(event);
+  }
+
+  _openMediaBrowserForRecording(item) {
+    const mediaContentId = item?.recording?.media_content_id;
+    if (!mediaContentId) {
+      this._showToast("Recording not linked");
+      return;
+    }
+    const target = this._mediaBrowserTarget(item, mediaContentId);
+    const url = `/media-browser/browser/${encodeURIComponent(target)}`;
+    window.open(url, "_blank", "noopener");
+  }
+
+  _mediaBrowserTarget(item, mediaContentId) {
+    if (!mediaContentId.includes("FILE|")) {
+      return mediaContentId;
+    }
+
+    const parts = mediaContentId.split("|");
+    if (parts.length < 5) {
+      return mediaContentId;
+    }
+
+    const [, configEntryId, channel, stream] = parts;
+    const dt = new Date(item?.start_ts || Date.now());
+    const year = dt.getFullYear();
+    const month = dt.getMonth() + 1;
+    const day = dt.getDate();
+    const event = item?.label === "animal" ? "ANIMAL" : "PERSON";
+    return `media-source://reolink/EVE|${configEntryId}|${channel}|${stream}|${year}|${month}|${day}|${event}`;
   }
 
   _formatTime(ts) {
@@ -196,6 +244,23 @@ class ReolinkFeedCard extends HTMLElement {
     `;
   }
 
+  _recordingIcon(recording, itemId) {
+    const status = recording?.status || "pending";
+    const linked = status === "linked";
+    const icon = linked ? "mdi:video" : "mdi:video-off";
+    const filename = this._recordingFilename(recording?.media_content_id);
+    const title = linked ? (filename || "Recording linked") : "Recording not linked";
+    return `<button class="recording-icon ${linked ? "linked" : "off"}" data-item-id="${itemId}" title="${title}" aria-label="${title}"><ha-icon icon="${icon}"></ha-icon></button>`;
+  }
+
+  _recordingFilename(mediaContentId) {
+    if (!mediaContentId || typeof mediaContentId !== "string") return "";
+    if (!mediaContentId.includes("FILE|")) return "";
+    const parts = mediaContentId.split("|");
+    if (parts.length < 5) return "";
+    return parts[4] || "";
+  }
+
   _render() {
     if (!this.shadowRoot || !this._config) {
       return;
@@ -204,7 +269,6 @@ class ReolinkFeedCard extends HTMLElement {
     const listHtml = this._filteredItems
       .map((item) => {
         const status = item.recording?.status || "pending";
-        const statusText = status === "linked" ? "linked" : status === "not_found" ? "not found" : "pending";
         const image = item.snapshot_url
           ? `<img src="${item.snapshot_url}" alt="${item.camera_name}" loading="lazy" />`
           : `<div class="placeholder">No snapshot</div>`;
@@ -227,7 +291,7 @@ class ReolinkFeedCard extends HTMLElement {
               <div class="line2">At: ${this._formatTime(item.start_ts)}</div>
               <div class="line3">
                 <span>Duration: ${this._formatDuration(item.duration_s)}</span>
-                <span class="status ${status}">${statusText}</span>
+                ${this._recordingIcon(item.recording, item.id)}
               </div>
             </div>
             <div class="right-col">
@@ -253,7 +317,11 @@ class ReolinkFeedCard extends HTMLElement {
             <button class="close" data-close="1" aria-label="Close">✕</button>
           </div>
           <div class="modal-body">
-            <video controls autoplay playsinline src="${this._modal.url}"></video>
+            ${
+              this._modal.kind === "image"
+                ? `<img src="${this._modal.url}" alt="${this._modal.title}" />`
+                : `<video controls autoplay playsinline src="${this._modal.url}"></video>`
+            }
             <a class="fallback" href="${this._modal.url}" target="_blank" rel="noopener">Open in new tab</a>
           </div>
         </div>
@@ -277,13 +345,12 @@ class ReolinkFeedCard extends HTMLElement {
         .camera { font-weight: 600; }
         .right-col { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; min-height: 52px; }
         .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
-        .label-icon ha-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
+        .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; }
         .line2, .line3 { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
         .line3 { display: flex; justify-content: space-between; }
-        .status { padding: 1px 6px; border-radius: 999px; border: 1px solid var(--divider-color); text-transform: lowercase; }
-        .status.linked { color: #0b6b3a; border-color: #0b6b3a55; }
-        .status.pending { color: #8a6500; border-color: #8a650055; }
-        .status.not_found { color: #8b1e1e; border-color: #8b1e1e55; }
+        button.recording-icon { border: 0; background: transparent; padding: 0; margin: 0; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+        button.recording-icon ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color); opacity: 0.6; }
+        button.recording-icon:hover ha-icon { opacity: 0.85; }
         button.refresh { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         button.refresh:hover { background: var(--secondary-background-color); }
         button.refresh svg { width: 14px; height: 14px; }
@@ -298,6 +365,7 @@ class ReolinkFeedCard extends HTMLElement {
         .close { border: 1px solid #555; background: transparent; color: #fff; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; }
         .modal-body { padding: 10px; display: grid; gap: 8px; }
         .modal video { width: 100%; max-height: 72vh; background: #000; }
+        .modal img { width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
         .fallback { color: #9cc3ff; font-size: 12px; }
         @media (max-width: 399px) {
           ul { grid-template-columns: 1fr; }
@@ -317,6 +385,7 @@ class ReolinkFeedCard extends HTMLElement {
 
       const thumb = el.querySelector("button.thumb");
       const refresh = el.querySelector("button.refresh");
+      const rec = el.querySelector("button.recording-icon");
 
       if (thumb) {
         thumb.addEventListener("click", (ev) => {
@@ -328,6 +397,12 @@ class ReolinkFeedCard extends HTMLElement {
         refresh.addEventListener("click", (ev) => {
           ev.preventDefault();
           this._refreshRecording(item, true);
+        });
+      }
+      if (rec) {
+        rec.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          this._openMediaBrowserForRecording(item);
         });
       }
     });
