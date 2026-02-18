@@ -10,6 +10,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._resolvingIds = new Set();
     this._rebuilding = false;
     this._page = 1;
+    this._activeLabels = new Set(["person", "animal"]);
     this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this._infoDialog = { open: false, itemId: "" };
     this.attachShadow({ mode: "open" });
@@ -23,6 +24,10 @@ class ReolinkFeedCard extends HTMLElement {
       page_size: 20,
       ...config,
     };
+    const configuredLabels = Array.isArray(this._config.labels)
+      ? this._config.labels.filter((label) => label === "person" || label === "animal")
+      : ["person", "animal"];
+    this._activeLabels = new Set(configuredLabels.length ? configuredLabels : ["person", "animal"]);
     this._render();
     this._loadItems();
   }
@@ -51,6 +56,7 @@ class ReolinkFeedCard extends HTMLElement {
   _applyFilters() {
     const cameraFilter = new Set((this._config?.cameras || []).map((v) => String(v).toLowerCase()));
     this._filteredItems = this._items.filter((item) => {
+      if (!this._activeLabels.has(item.label)) return false;
       if (!cameraFilter.size) return true;
       return cameraFilter.has(String(item.camera_name || "").toLowerCase());
     });
@@ -75,6 +81,16 @@ class ReolinkFeedCard extends HTMLElement {
     return this._filteredItems.slice(start, start + pageSize);
   }
 
+  _toggleLabelFilter(label) {
+    if (this._activeLabels.has(label)) {
+      this._activeLabels.delete(label);
+    } else {
+      this._activeLabels.add(label);
+    }
+    this._applyFilters();
+    this._render();
+  }
+
   async _loadItems() {
     if (!this._hass || !this._config) {
       return;
@@ -87,7 +103,7 @@ class ReolinkFeedCard extends HTMLElement {
     try {
       const result = await this._hass.callWS({
         type: "reolink_feed/list",
-        labels: this._config.labels,
+        labels: ["person", "animal"],
       });
       this._items = result.items || [];
       this._applyFilters();
@@ -335,6 +351,8 @@ class ReolinkFeedCard extends HTMLElement {
 
     const pagedItems = this._pagedItems();
     const totalPages = this._totalPages();
+    const personActive = this._activeLabels.has("person");
+    const animalActive = this._activeLabels.has("animal");
     const listHtml = pagedItems
       .map((item) => {
         const image = item.snapshot_url
@@ -447,6 +465,12 @@ class ReolinkFeedCard extends HTMLElement {
         :host { display: block; }
         ha-card { padding: 10px; }
         .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .topbar { justify-content: space-between; }
+        .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .filter-pill { border: 1px solid rgba(255,255,255,0.22); background: transparent; color: var(--primary-text-color); border-radius: 999px; height: 30px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.55; }
+        .filter-pill ha-icon { --mdc-icon-size: 14px; }
+        .filter-pill.active { border-color: #fff; color: #fff; opacity: 1; }
+        .filter-pill:hover { opacity: 0.9; background: rgba(255,255,255,0.08); }
         .actions { display: flex; align-items: center; gap: 8px; }
         button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
         button.rebuild:hover { background: var(--secondary-background-color); }
@@ -513,6 +537,16 @@ class ReolinkFeedCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="topbar">
+          <div class="filters">
+            <button class="filter-pill${personActive ? " active" : ""}" data-filter-label="person" aria-pressed="${personActive ? "true" : "false"}">
+              <ha-icon icon="mdi:account"></ha-icon>
+              <span>Person</span>
+            </button>
+            <button class="filter-pill${animalActive ? " active" : ""}" data-filter-label="animal" aria-pressed="${animalActive ? "true" : "false"}">
+              <ha-icon icon="mdi:dog-side"></ha-icon>
+              <span>Animal</span>
+            </button>
+          </div>
           <div class="actions">
             <button class="refresh-feed${this._loading ? " loading" : ""}" ${this._loading ? "disabled" : ""} aria-label="Refresh feed data" title="Refresh feed data">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -572,6 +606,14 @@ class ReolinkFeedCard extends HTMLElement {
     refreshFeedButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
       this._loadItems();
+    });
+    this.shadowRoot.querySelectorAll(".filter-pill").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const label = el.getAttribute("data-filter-label");
+        if (label !== "person" && label !== "animal") return;
+        this._toggleLabelFilter(label);
+      });
     });
 
     this.shadowRoot.querySelectorAll("button.page-nav").forEach((el) => {
