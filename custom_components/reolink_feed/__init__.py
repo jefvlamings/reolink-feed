@@ -56,6 +56,7 @@ def _async_register_ws_commands(hass: HomeAssistant) -> None:
         return
     websocket_api.async_register_command(hass, ws_list_items)
     websocket_api.async_register_command(hass, ws_resolve_recording)
+    websocket_api.async_register_command(hass, ws_rebuild_from_history)
     hass.data[f"{DOMAIN}_ws_registered"] = True
 
 
@@ -158,3 +159,33 @@ async def ws_resolve_recording(
         return
 
     connection.send_result(msg["id"], recording)
+
+
+@websocket_api.websocket_command(
+    {
+        "type": "reolink_feed/rebuild_from_history",
+        vol.Optional("since_hours", default=24): cv.positive_int,
+        vol.Optional("per_entity_changes", default=400): cv.positive_int,
+    }
+)
+@websocket_api.async_response
+async def ws_rebuild_from_history(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Rebuild feed items from recorder history for Reolink sensors."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "reolink_feed is not loaded")
+        return
+
+    entry: ReolinkFeedConfigEntry = entries[0]
+    try:
+        result = await entry.runtime_data.manager.async_rebuild_from_history(
+            since_hours=msg["since_hours"],
+            per_entity_changes=msg["per_entity_changes"],
+        )
+    except RuntimeError as err:
+        connection.send_error(msg["id"], "rebuild_failed", str(err))
+        return
+
+    connection.send_result(msg["id"], result)

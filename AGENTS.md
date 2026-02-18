@@ -15,7 +15,12 @@
 - `docker compose up -d`: start Home Assistant for local development.
 - `docker compose restart homeassistant`: reload after backend code changes.
 - `docker compose logs -f homeassistant`: follow runtime logs and integration errors.
+- `./scripts/bump-card-resource-version.sh`: bump Lovelace resource `?v=` for `reolink-feed-card.js` after card changes.
 - `python3 - <<'PY' ... ast.parse(...)`: quick syntax sanity check for `custom_components/reolink_feed/*.py`.
+
+Required after changes:
+- After any `config/www/reolink-feed-card.js` edit, always run `./scripts/bump-card-resource-version.sh`.
+- After integration or card changes, always run `docker compose restart homeassistant`.
 
 Example:
 ```bash

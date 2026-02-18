@@ -9,6 +9,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._loading = false;
     this._refreshTimer = null;
     this._resolvingIds = new Set();
+    this._rebuilding = false;
     this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this.attachShadow({ mode: "open" });
   }
@@ -22,6 +23,7 @@ class ReolinkFeedCard extends HTMLElement {
       cameras: [],
       refresh_seconds: 20,
       full_width: false,
+      per_entity_changes: 400,
       ...config,
     };
     this._applyLayoutConfig();
@@ -110,6 +112,33 @@ class ReolinkFeedCard extends HTMLElement {
       this._error = err?.message || String(err);
     } finally {
       this._loading = false;
+      this._render();
+    }
+  }
+
+  async _rebuildFromHistory() {
+    if (!this._hass || !this._config || this._rebuilding) {
+      return;
+    }
+
+    this._rebuilding = true;
+    this._error = null;
+    this._render();
+    try {
+      const result = await this._hass.callWS({
+        type: "reolink_feed/rebuild_from_history",
+        since_hours: this._config.since_hours,
+        per_entity_changes: this._config.per_entity_changes,
+      });
+      const itemCount = Number(result?.item_count || 0);
+      const entityCount = Number(result?.entity_count || 0);
+      this._showToast(`Rebuilt ${itemCount} items from ${entityCount} sensors`);
+      await this._loadItems();
+    } catch (err) {
+      this._showToast(`Rebuild failed: ${err?.message || err}`);
+      this._error = err?.message || String(err);
+    } finally {
+      this._rebuilding = false;
       this._render();
     }
   }
@@ -354,6 +383,10 @@ class ReolinkFeedCard extends HTMLElement {
       <style>
         :host { display: block; }
         ha-card { padding: 10px; }
+        .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 10px; }
+        button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; }
+        button.rebuild:hover { background: var(--secondary-background-color); }
+        button.rebuild:disabled { opacity: 0.6; cursor: default; }
         ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
         .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
         .thumb { grid-column: 1 / span 2; position: relative; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
@@ -390,6 +423,11 @@ class ReolinkFeedCard extends HTMLElement {
         .fallback { color: #9cc3ff; font-size: 12px; }
       </style>
       <ha-card>
+        <div class="topbar">
+          <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Rebuild feed from history">
+            ${this._rebuilding ? "Rebuilding..." : "Rebuild Feed"}
+          </button>
+        </div>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>` : `<div class="empty">No detections in range.</div>`}
       </ha-card>
@@ -423,6 +461,12 @@ class ReolinkFeedCard extends HTMLElement {
           this._openMediaBrowserForRecording(item);
         });
       }
+    });
+
+    const rebuildButton = this.shadowRoot.querySelector("button.rebuild");
+    rebuildButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      this._rebuildFromHistory();
     });
 
     this.shadowRoot.querySelectorAll("[data-close='1']").forEach((el) => {

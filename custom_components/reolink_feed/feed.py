@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, tzinfo
 import logging
@@ -19,6 +20,7 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import UNDEFINED
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .const import (
@@ -95,6 +97,26 @@ class ReolinkFeedManager:
         if changed:
             await self._store.async_save(self._items)
         return changed
+
+    async def async_rebuild_from_history(
+        self, *, since_hours: int = 24, per_entity_changes: int = 400
+    ) -> dict[str, int]:
+        """Rebuild items from Reolink person/animal binary sensor history."""
+        entity_ids = self._collect_reolink_detection_entities()
+        rebuilt = await self._build_items_from_history(
+            entity_ids, since_hours, per_entity_changes
+        )
+
+        self._cancel_all_timers()
+        self._items = rebuilt[:MAX_ITEMS]
+        self._rebuild_indexes()
+        await self._store.async_save(self._items)
+
+        await self._async_resolve_recordings_immediately(
+            [item.id for item in self._items if item.end_ts is not None]
+        )
+        await self._store.async_save(self._items)
+        return {"entity_count": len(entity_ids), "item_count": len(self._items)}
 
     def _rebuild_indexes(self) -> None:
         self._open_item_id_by_key.clear()
@@ -557,6 +579,219 @@ class ReolinkFeedManager:
 
         self._label_by_sensor[entity_id] = None
         return None
+
+    async def _async_resolve_recordings_immediately(self, item_ids: list[str]) -> None:
+        if not item_ids:
+            return
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def _resolve_item(item_id: str) -> None:
+            async with semaphore:
+                try:
+                    await self.async_resolve_recording(item_id, final_attempt=True)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Recording resolve failed for rebuilt item %s: %s", item_id, err)
+
+        await asyncio.gather(*[_resolve_item(item_id) for item_id in item_ids])
+
+    def _cancel_all_timers(self) -> None:
+        if self._unsub_delayed_save:
+            self._unsub_delayed_save()
+            self._unsub_delayed_save = None
+        for unsub in self._unsub_snapshot_timers.values():
+            unsub()
+        self._unsub_snapshot_timers.clear()
+        for timer_unsubs in self._unsub_recording_timers.values():
+            for unsub in timer_unsubs:
+                unsub()
+        self._unsub_recording_timers.clear()
+
+    def _collect_reolink_detection_entities(self) -> list[str]:
+        ent_reg = er.async_get(self.hass)
+        entity_ids: list[str] = []
+        seen: set[str] = set()
+
+        for entry in self.hass.config_entries.async_entries("reolink"):
+            for entity in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+                if not entity.entity_id.startswith("binary_sensor."):
+                    continue
+                if entity.disabled_by is not None:
+                    continue
+                label = self._resolve_detection_label(entity.entity_id)
+                if label not in {"person", "animal"}:
+                    continue
+                if entity.entity_id in seen:
+                    continue
+                seen.add(entity.entity_id)
+                entity_ids.append(entity.entity_id)
+
+        if entity_ids:
+            return sorted(entity_ids)
+
+        # Fallback for setups where registry links are incomplete.
+        for entity in ent_reg.entities.values():
+            if not entity.entity_id.startswith("binary_sensor."):
+                continue
+            if entity.disabled_by is not None:
+                continue
+            if (entity.platform or "").lower() != "reolink":
+                continue
+            label = self._resolve_detection_label(entity.entity_id)
+            if label not in {"person", "animal"}:
+                continue
+            if entity.entity_id in seen:
+                continue
+            seen.add(entity.entity_id)
+            entity_ids.append(entity.entity_id)
+        return sorted(entity_ids)
+
+    async def _build_items_from_history(
+        self, entity_ids: list[str], since_hours: int, per_entity_changes: int
+    ) -> list[DetectionItem]:
+        if not entity_ids:
+            return []
+
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import get_last_state_changes
+        except Exception as err:  # noqa: BLE001
+            raise RuntimeError(f"Recorder history is unavailable: {err}") from err
+
+        since_dt = datetime.now().astimezone() - timedelta(hours=max(1, since_hours))
+        built_items: list[DetectionItem] = []
+        recorder = get_instance(self.hass)
+
+        for entity_id in entity_ids:
+            label = self._resolve_detection_label(entity_id)
+            if label not in {"person", "animal"}:
+                continue
+
+            try:
+                by_entity = await recorder.async_add_executor_job(
+                    get_last_state_changes, self.hass, max(2, per_entity_changes), entity_id
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Failed to read recorder history for %s: %s", entity_id, err)
+                continue
+
+            states = list(by_entity.get(entity_id, [])) if isinstance(by_entity, dict) else []
+            built_items.extend(
+                _build_detection_items_for_entity(entity_id, label, states, since_dt)
+            )
+
+        built_items = _merge_detection_items(built_items)
+        built_items.sort(key=lambda item: item.start_dt, reverse=True)
+        return built_items
+
+
+def _build_detection_items_for_entity(
+    entity_id: str, label: str, states: list[Any], since_dt: datetime
+) -> list[DetectionItem]:
+    if not states:
+        return []
+
+    timeline = sorted(
+        (state for state in states if _state_changed_at(state) is not None),
+        key=lambda state: _state_changed_at(state) or since_dt,
+    )
+    if not timeline:
+        return []
+
+    items: list[DetectionItem] = []
+    active_start: datetime | None = None
+    camera_name: str | None = None
+
+    for state in timeline:
+        changed_at = _state_changed_at(state)
+        if changed_at is None:
+            continue
+        state_value = (getattr(state, "state", "") or "").lower()
+        if state_value == "on":
+            active_start = changed_at
+            camera_name = _camera_name_from_state(entity_id, getattr(state, "name", None))
+            continue
+        if state_value != "off":
+            continue
+        if active_start is None:
+            continue
+        if changed_at <= since_dt:
+            active_start = None
+            continue
+
+        started = active_start
+        ended = changed_at
+        if ended <= started:
+            active_start = None
+            continue
+        if ended < since_dt:
+            active_start = None
+            continue
+
+        resolved_camera = camera_name or _camera_name_from_state(
+            entity_id, getattr(state, "name", None)
+        )
+        duration_s = max(1, int((ended - started).total_seconds()))
+        items.append(
+            DetectionItem(
+                id=str(uuid.uuid4()),
+                start_ts=started.isoformat(),
+                end_ts=ended.isoformat(),
+                duration_s=duration_s,
+                label=label,
+                source_entity_id=entity_id,
+                camera_name=resolved_camera,
+                snapshot_url=None,
+                recording={"status": "pending"},
+            )
+        )
+        active_start = None
+
+    return items
+
+
+def _state_changed_at(state: Any) -> datetime | None:
+    changed = getattr(state, "last_changed", None) or getattr(state, "last_updated", None)
+    if changed is None:
+        return None
+    if changed.tzinfo is None:
+        return changed.replace(tzinfo=dt_util.UTC)
+    return changed
+
+
+def _merge_detection_items(items: list[DetectionItem]) -> list[DetectionItem]:
+    if not items:
+        return []
+
+    merged: list[DetectionItem] = []
+    for item in sorted(items, key=lambda value: value.start_dt):
+        if item.end_dt is None:
+            continue
+        if not merged:
+            merged.append(item)
+            continue
+
+        prev = merged[-1]
+        if prev.end_dt is None:
+            merged.append(item)
+            continue
+
+        same_group = (
+            prev.camera_name == item.camera_name
+            and prev.label == item.label
+            and prev.source_entity_id == item.source_entity_id
+        )
+        gap = (item.start_dt - prev.end_dt).total_seconds()
+        if not same_group or gap > MERGE_WINDOW_SECONDS:
+            merged.append(item)
+            continue
+
+        if item.end_dt > prev.end_dt:
+            prev.end_ts = item.end_ts
+        prev.duration_s = max(1, int((prev.end_dt - prev.start_dt).total_seconds()))
+        prev.recording = {"status": "pending"}
+
+    return merged
 
 
 def _write_snapshot_file(path: Path, data: bytes) -> None:
