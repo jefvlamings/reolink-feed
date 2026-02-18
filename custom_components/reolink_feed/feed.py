@@ -156,24 +156,32 @@ class ReolinkFeedManager:
             self._schedule_cleanup()
 
     async def async_rebuild_from_history(
-        self, *, since_hours: int = 24, per_entity_changes: int = 400
+        self, *, per_entity_changes: int = 400
     ) -> dict[str, int]:
         """Rebuild items from Reolink person/animal binary sensor history."""
         entity_ids = self._collect_reolink_detection_entities()
-        rebuilt = await self._build_items_from_history(
-            entity_ids, since_hours, per_entity_changes
+        rebuilt = await self._build_items_from_history(entity_ids, per_entity_changes)
+        merged, added_count, merged_count, resolve_item_ids = _merge_rebuilt_with_existing_items(
+            self._items, rebuilt
         )
-
-        self._cancel_all_timers()
-        self._items = rebuilt[:MAX_ITEMS]
+        merged.sort(key=lambda item: item.start_dt, reverse=True)
+        self._items = merged[:MAX_ITEMS]
         self._rebuild_indexes()
         await self._store.async_save(self._items)
 
-        await self._async_resolve_recordings_immediately(
-            [item.id for item in self._items if item.end_ts is not None]
-        )
+        resolvable_ids = {
+            item.id
+            for item in self._items
+            if item.id in resolve_item_ids and item.end_ts is not None
+        }
+        await self._async_resolve_recordings_immediately(sorted(resolvable_ids))
         await self._store.async_save(self._items)
-        return {"entity_count": len(entity_ids), "item_count": len(self._items)}
+        return {
+            "entity_count": len(entity_ids),
+            "item_count": len(self._items),
+            "added_count": added_count,
+            "merged_count": merged_count,
+        }
 
     def _rebuild_indexes(self) -> None:
         self._open_item_id_by_key.clear()
@@ -713,7 +721,7 @@ class ReolinkFeedManager:
         return sorted(entity_ids)
 
     async def _build_items_from_history(
-        self, entity_ids: list[str], since_hours: int, per_entity_changes: int
+        self, entity_ids: list[str], per_entity_changes: int
     ) -> list[DetectionItem]:
         if not entity_ids:
             return []
@@ -724,7 +732,7 @@ class ReolinkFeedManager:
         except Exception as err:  # noqa: BLE001
             raise RuntimeError(f"Recorder history is unavailable: {err}") from err
 
-        since_dt = datetime.now().astimezone() - timedelta(hours=max(1, since_hours))
+        since_dt = datetime.now().astimezone() - timedelta(hours=RETENTION_HOURS)
         built_items: list[DetectionItem] = []
         recorder = get_instance(self.hass)
 
@@ -858,6 +866,115 @@ def _merge_detection_items(items: list[DetectionItem]) -> list[DetectionItem]:
         prev.recording = {"status": "pending"}
 
     return merged
+
+
+def _merge_rebuilt_with_existing_items(
+    existing_items: list[DetectionItem], rebuilt_items: list[DetectionItem]
+) -> tuple[list[DetectionItem], int, int, set[str]]:
+    merged_items = list(existing_items)
+    added_count = 0
+    merged_count = 0
+    resolve_item_ids: set[str] = set()
+
+    for rebuilt in rebuilt_items:
+        match_index = _find_matching_item_index(merged_items, rebuilt)
+        if match_index is None:
+            merged_items.append(rebuilt)
+            added_count += 1
+            if not _recording_is_linked(rebuilt.recording):
+                resolve_item_ids.add(rebuilt.id)
+            continue
+
+        existing = merged_items[match_index]
+        merged_items[match_index] = _merge_existing_item(existing, rebuilt)
+        merged_count += 1
+        if not _recording_is_linked(merged_items[match_index].recording):
+            resolve_item_ids.add(merged_items[match_index].id)
+
+    return merged_items, added_count, merged_count, resolve_item_ids
+
+
+def _find_matching_item_index(items: list[DetectionItem], candidate: DetectionItem) -> int | None:
+    best: tuple[float, int] | None = None
+    candidate_end = candidate.end_dt or candidate.start_dt
+
+    for index, existing in enumerate(items):
+        if existing.label != candidate.label:
+            continue
+        if existing.source_entity_id != candidate.source_entity_id:
+            continue
+
+        existing_end = existing.end_dt or existing.start_dt
+        if not _events_overlap_or_close(
+            existing.start_dt,
+            existing_end,
+            candidate.start_dt,
+            candidate_end,
+            MERGE_WINDOW_SECONDS,
+        ):
+            continue
+
+        start_delta = abs((existing.start_dt - candidate.start_dt).total_seconds())
+        end_delta = abs((existing_end - candidate_end).total_seconds())
+        score = start_delta + end_delta
+        if best is None or score < best[0]:
+            best = (score, index)
+
+    return best[1] if best is not None else None
+
+
+def _merge_existing_item(existing: DetectionItem, rebuilt: DetectionItem) -> DetectionItem:
+    start_dt = min(existing.start_dt, rebuilt.start_dt)
+    existing_end = existing.end_dt
+    rebuilt_end = rebuilt.end_dt
+    end_dt: datetime | None
+    if existing_end is None or rebuilt_end is None:
+        end_dt = existing_end or rebuilt_end
+    else:
+        end_dt = max(existing_end, rebuilt_end)
+
+    if end_dt is not None:
+        duration_s: int | None = max(1, int((end_dt - start_dt).total_seconds()))
+        end_ts: str | None = end_dt.isoformat()
+    else:
+        duration_s = None
+        end_ts = None
+
+    merged_recording = _merge_recording(existing.recording, rebuilt.recording)
+    return DetectionItem(
+        id=existing.id,
+        start_ts=start_dt.isoformat(),
+        end_ts=end_ts,
+        duration_s=duration_s,
+        label=existing.label,
+        source_entity_id=existing.source_entity_id,
+        camera_name=existing.camera_name or rebuilt.camera_name,
+        snapshot_url=existing.snapshot_url,
+        recording=merged_recording,
+    )
+
+
+def _merge_recording(existing: dict[str, Any], rebuilt: dict[str, Any]) -> dict[str, Any]:
+    if _recording_is_linked(existing):
+        return existing
+    if _recording_is_linked(rebuilt):
+        return rebuilt
+    return {"status": "pending"}
+
+
+def _recording_is_linked(recording: dict[str, Any] | None) -> bool:
+    return (recording or {}).get("status") == "linked"
+
+
+def _events_overlap_or_close(
+    a_start: datetime,
+    a_end: datetime,
+    b_start: datetime,
+    b_end: datetime,
+    tolerance_seconds: int,
+) -> bool:
+    tolerance = timedelta(seconds=tolerance_seconds)
+    return a_start <= b_end + tolerance and b_start <= a_end + tolerance
 
 
 def _write_snapshot_file(path: Path, data: bytes) -> None:

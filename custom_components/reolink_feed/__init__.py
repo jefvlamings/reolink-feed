@@ -22,10 +22,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
-from .const import CARD_FILENAME, CARD_URL_PATH, DOMAIN
+from .const import CARD_FILENAME, CARD_URL_PATH, DOMAIN, LIST_ITEMS_LIMIT, RETENTION_HOURS
 from .feed import ReolinkFeedManager
 
 _LOGGER = logging.getLogger(__name__)
+_LOCAL_CARD_URL_PATH = "/local/reolink-feed-card.js"
 
 
 @dataclass(slots=True)
@@ -99,7 +100,11 @@ async def _async_try_add_lovelace_card_resource(hass: HomeAssistant) -> bool:
     await resources.async_get_info()
     for item in resources.async_items() or []:
         url = str(item.get(CONF_URL, ""))
-        if url.split("?", 1)[0] == CARD_URL_PATH:
+        base_url = url.split("?", 1)[0]
+        if base_url == _LOCAL_CARD_URL_PATH:
+            _LOGGER.debug("Local dev card resource detected; skipping auto-add for %s", CARD_URL_PATH)
+            return True
+        if base_url == CARD_URL_PATH:
             return True
 
     await resources.async_create_item(
@@ -156,8 +161,6 @@ def _async_register_services(hass: HomeAssistant) -> None:
 @websocket_api.websocket_command(
     {
         "type": "reolink_feed/list",
-        vol.Optional("since_hours", default=24): cv.positive_int,
-        vol.Optional("limit", default=200): cv.positive_int,
         vol.Optional("labels", default=["person", "animal"]): [cv.string],
     }
 )
@@ -176,12 +179,10 @@ async def ws_list_items(
     await entry.runtime_data.manager.async_prune_expired_items()
     items = entry.runtime_data.manager.get_items()
 
-    since_hours = msg["since_hours"]
-    limit = msg["limit"]
     labels = set(msg["labels"])
 
     now_ts = dt_util.utcnow().timestamp()
-    since_seconds = since_hours * 3600
+    since_seconds = RETENTION_HOURS * 3600
     filtered = []
     for item in items:
         if item.label not in labels:
@@ -189,7 +190,7 @@ async def ws_list_items(
         age_seconds = now_ts - item.start_dt.timestamp()
         if age_seconds <= since_seconds:
             filtered.append(item.as_dict())
-        if len(filtered) >= limit:
+        if len(filtered) >= LIST_ITEMS_LIMIT:
             break
 
     connection.send_result(msg["id"], {"items": filtered})
@@ -224,7 +225,6 @@ async def ws_resolve_recording(
 @websocket_api.websocket_command(
     {
         "type": "reolink_feed/rebuild_from_history",
-        vol.Optional("since_hours", default=24): cv.positive_int,
         vol.Optional("per_entity_changes", default=400): cv.positive_int,
     }
 )
@@ -241,7 +241,6 @@ async def ws_rebuild_from_history(
     entry: ReolinkFeedConfigEntry = entries[0]
     try:
         result = await entry.runtime_data.manager.async_rebuild_from_history(
-            since_hours=msg["since_hours"],
             per_entity_changes=msg["per_entity_changes"],
         )
     except RuntimeError as err:

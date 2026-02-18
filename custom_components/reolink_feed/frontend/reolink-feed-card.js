@@ -10,23 +10,20 @@ class ReolinkFeedCard extends HTMLElement {
     this._refreshTimer = null;
     this._resolvingIds = new Set();
     this._rebuilding = false;
+    this._page = 1;
     this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this.attachShadow({ mode: "open" });
   }
 
   setConfig(config) {
     this._config = {
-      title: "Reolink Feed",
-      since_hours: 24,
-      limit: 200,
       labels: ["person", "animal"],
       cameras: [],
       refresh_seconds: 20,
-      full_width: false,
       per_entity_changes: 400,
+      page_size: 20,
       ...config,
     };
-    this._applyLayoutConfig();
     this._scheduleRefresh();
     this._render();
     this._loadItems();
@@ -39,7 +36,6 @@ class ReolinkFeedCard extends HTMLElement {
   static getStubConfig() {
     return {
       type: "custom:reolink-feed-card",
-      full_width: false,
     };
   }
 
@@ -63,14 +59,6 @@ class ReolinkFeedCard extends HTMLElement {
     return 6;
   }
 
-  _applyLayoutConfig() {
-    if (this._config?.full_width) {
-      this.style.gridColumn = "1 / -1";
-    } else {
-      this.style.gridColumn = "";
-    }
-  }
-
   _scheduleRefresh() {
     if (this._refreshTimer) {
       clearInterval(this._refreshTimer);
@@ -90,6 +78,25 @@ class ReolinkFeedCard extends HTMLElement {
       if (!cameraFilter.size) return true;
       return cameraFilter.has(String(item.camera_name || "").toLowerCase());
     });
+    this._page = Math.min(this._page, this._totalPages());
+    if (this._page < 1) this._page = 1;
+  }
+
+  _pageSize() {
+    const raw = Number(this._config?.page_size ?? 20);
+    if (!Number.isFinite(raw)) return 20;
+    return Math.max(1, Math.min(100, Math.floor(raw)));
+  }
+
+  _totalPages() {
+    return Math.max(1, Math.ceil(this._filteredItems.length / this._pageSize()));
+  }
+
+  _pagedItems() {
+    const pageSize = this._pageSize();
+    const page = Math.max(1, Math.min(this._page, this._totalPages()));
+    const start = (page - 1) * pageSize;
+    return this._filteredItems.slice(start, start + pageSize);
   }
 
   async _loadItems() {
@@ -102,8 +109,6 @@ class ReolinkFeedCard extends HTMLElement {
     try {
       const result = await this._hass.callWS({
         type: "reolink_feed/list",
-        since_hours: this._config.since_hours,
-        limit: this._config.limit,
         labels: this._config.labels,
       });
       this._items = result.items || [];
@@ -127,7 +132,6 @@ class ReolinkFeedCard extends HTMLElement {
     try {
       const result = await this._hass.callWS({
         type: "reolink_feed/rebuild_from_history",
-        since_hours: this._config.since_hours,
         per_entity_changes: this._config.per_entity_changes,
       });
       const itemCount = Number(result?.item_count || 0);
@@ -316,9 +320,10 @@ class ReolinkFeedCard extends HTMLElement {
       return;
     }
 
-    const listHtml = this._filteredItems
+    const pagedItems = this._pagedItems();
+    const totalPages = this._totalPages();
+    const listHtml = pagedItems
       .map((item) => {
-        const status = item.recording?.status || "pending";
         const image = item.snapshot_url
           ? `<img src="${item.snapshot_url}" alt="${item.camera_name}" loading="lazy" />`
           : `<div class="placeholder">No snapshot</div>`;
@@ -357,6 +362,16 @@ class ReolinkFeedCard extends HTMLElement {
         `;
       })
       .join("");
+    const paginationHtml =
+      this._filteredItems.length > this._pageSize()
+        ? `
+      <div class="pagination">
+        <button class="page-nav" data-page-nav="prev" ${this._page <= 1 ? "disabled" : ""}>Previous</button>
+        <span class="page-info">Page ${this._page} / ${totalPages}</span>
+        <button class="page-nav" data-page-nav="next" ${this._page >= totalPages ? "disabled" : ""}>Next</button>
+      </div>
+      `
+        : "";
 
     const modalHtml = this._modal.open
       ? `
@@ -387,6 +402,11 @@ class ReolinkFeedCard extends HTMLElement {
         button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; }
         button.rebuild:hover { background: var(--secondary-background-color); }
         button.rebuild:disabled { opacity: 0.6; cursor: default; }
+        .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
+        .page-info { color: var(--secondary-text-color); font-size: 12px; min-width: 84px; text-align: center; }
+        button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
+        button.page-nav:hover { background: var(--secondary-background-color); }
+        button.page-nav:disabled { opacity: 0.6; cursor: default; }
         ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
         .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
         .thumb { grid-column: 1 / span 2; position: relative; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
@@ -429,7 +449,7 @@ class ReolinkFeedCard extends HTMLElement {
           </button>
         </div>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
-        ${this._filteredItems.length ? `<ul>${listHtml}</ul>` : `<div class="empty">No detections in range.</div>`}
+        ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">No detections in range.</div>`}
       </ha-card>
       ${modalHtml}
     `;
@@ -469,6 +489,22 @@ class ReolinkFeedCard extends HTMLElement {
       this._rebuildFromHistory();
     });
 
+    this.shadowRoot.querySelectorAll("button.page-nav").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const action = el.getAttribute("data-page-nav");
+        if (action === "prev" && this._page > 1) {
+          this._page -= 1;
+          this._render();
+          return;
+        }
+        if (action === "next" && this._page < this._totalPages()) {
+          this._page += 1;
+          this._render();
+        }
+      });
+    });
+
     this.shadowRoot.querySelectorAll("[data-close='1']").forEach((el) => {
       el.addEventListener("click", (ev) => {
         if (ev.target === el || ev.target?.getAttribute("data-close") === "1") {
@@ -502,9 +538,7 @@ class ReolinkFeedCardEditor extends HTMLElement {
     this._render();
   }
 
-  _onToggle(ev) {
-    const checked = ev.target.checked;
-    const next = { ...this._config, full_width: checked };
+  _emitConfig(next) {
     this._config = next;
     this.dispatchEvent(
       new CustomEvent("config-changed", {
@@ -515,22 +549,74 @@ class ReolinkFeedCardEditor extends HTMLElement {
     );
   }
 
+  _onNumberChange(key, value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    const next = { ...this._config, [key]: Number.isFinite(parsed) ? parsed : fallback };
+    this._emitConfig(next);
+  }
+
+  _onLabelToggle(label, checked) {
+    const current = Array.isArray(this._config.labels) ? this._config.labels : ["person", "animal"];
+    const labels = new Set(current);
+    if (checked) labels.add(label);
+    else labels.delete(label);
+    const next = { ...this._config, labels: Array.from(labels) };
+    this._emitConfig(next);
+  }
+
   _render() {
     if (!this.shadowRoot) return;
-    const checked = Boolean(this._config?.full_width);
+    const refreshSeconds = Number(this._config?.refresh_seconds ?? 20);
+    const pageSize = Number(this._config?.page_size ?? 20);
+    const labels = new Set(Array.isArray(this._config?.labels) ? this._config.labels : ["person", "animal"]);
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
-        .row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
-        label { color: var(--primary-text-color); font-size: 14px; }
+        .grid { display: grid; gap: 10px; }
+        .field { display: grid; gap: 4px; }
+        label { color: var(--primary-text-color); font-size: 13px; }
+        input[type="text"], input[type="number"] {
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          border-radius: 8px;
+          padding: 8px;
+          font-size: 13px;
+        }
+        .labels { display: flex; gap: 12px; align-items: center; }
+        .labels label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
       </style>
-      <div class="row">
-        <input id="full_width" type="checkbox" ${checked ? "checked" : ""} />
-        <label for="full_width">Full width in section</label>
+      <div class="grid">
+        <div class="field">
+          <label for="refresh_seconds">Refresh seconds</label>
+          <input id="refresh_seconds" type="number" min="5" value="${refreshSeconds}" />
+        </div>
+        <div class="field">
+          <label for="page_size">Page size</label>
+          <input id="page_size" type="number" min="1" max="100" value="${pageSize}" />
+        </div>
+        <div class="field">
+          <label>Labels</label>
+          <div class="labels">
+            <label><input id="label_person" type="checkbox" ${labels.has("person") ? "checked" : ""} />Person</label>
+            <label><input id="label_animal" type="checkbox" ${labels.has("animal") ? "checked" : ""} />Animal</label>
+          </div>
+        </div>
       </div>
     `;
-    const checkbox = this.shadowRoot.querySelector("#full_width");
-    checkbox?.addEventListener("change", (ev) => this._onToggle(ev));
+
+    this.shadowRoot.querySelector("#refresh_seconds")?.addEventListener("change", (ev) => {
+      this._onNumberChange("refresh_seconds", ev.target.value, 20);
+    });
+    this.shadowRoot.querySelector("#page_size")?.addEventListener("change", (ev) => {
+      this._onNumberChange("page_size", ev.target.value, 20);
+    });
+    this.shadowRoot.querySelector("#label_person")?.addEventListener("change", (ev) => {
+      this._onLabelToggle("person", ev.target.checked);
+    });
+    this.shadowRoot.querySelector("#label_animal")?.addEventListener("change", (ev) => {
+      this._onLabelToggle("animal", ev.target.checked);
+    });
   }
 }
 

@@ -81,9 +81,6 @@ Then add a manual card:
 
 ```yaml
 type: custom:reolink-feed-card
-title: Reolink Feed
-since_hours: 24
-limit: 100
 labels:
   - person
   - animal
@@ -91,6 +88,7 @@ cameras:
   - Deurbel
   - Tuinhuis
 refresh_seconds: 20
+page_size: 20
 ```
 
 ## Current Status (V1 in progress)
@@ -180,8 +178,6 @@ Command:
 - `reolink_feed/resolve_recording`
 
 Request fields:
-- `since_hours` (optional, default `24`)
-- `limit` (optional, default `200`)
 - `labels` (optional, default `["person", "animal"]`)
 
 Response:

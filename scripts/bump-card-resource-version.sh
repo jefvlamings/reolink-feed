@@ -22,9 +22,12 @@ echo "Synced card: $SOURCE_FILE -> $TARGET_FILE"
 
 node - "$FILE" "$CARD_PATH" <<'NODE'
 const fs = require("fs");
+const crypto = require("crypto");
 
 const file = process.argv[2];
 const cardPath = process.argv[3];
+const integrationCardPath = "/reolink_feed/reolink-feed-card.js";
+const epoch = Math.floor(Date.now() / 1000);
 const raw = fs.readFileSync(file, "utf8");
 const json = JSON.parse(raw);
 const items = json?.data?.items;
@@ -34,18 +37,52 @@ if (!Array.isArray(items)) {
   process.exit(1);
 }
 
-let updated = false;
+const baseUrl = (url) => String(url || "").split("?", 1)[0];
+
+const filtered = [];
 for (const item of items) {
   if (!item || typeof item.url !== "string") continue;
-  if (!item.url.startsWith(cardPath)) continue;
+  const base = baseUrl(item.url);
+  if (base === integrationCardPath) {
+    console.log(`Removed conflicting resource URL: ${item.url}`);
+    continue;
+  }
+  filtered.push(item);
+}
+json.data.items = filtered;
 
-  const [base, query = ""] = item.url.split("?");
+let updated = false;
+let localItem = null;
+const deduped = [];
+for (const item of filtered) {
+  if (baseUrl(item.url) !== cardPath) {
+    deduped.push(item);
+    continue;
+  }
+  if (localItem === null) {
+    localItem = item;
+    deduped.push(item);
+    continue;
+  }
+  console.log(`Removed duplicate local resource URL: ${item.url}`);
+}
+json.data.items = deduped;
+
+if (localItem === null) {
+  localItem = {
+    id: crypto.randomUUID(),
+    type: "module",
+    url: `${cardPath}?v=${epoch}`,
+  };
+  json.data.items.push(localItem);
+  console.log(`Added resource URL: ${localItem.url}`);
+  updated = true;
+} else {
+  const [base, query = ""] = localItem.url.split("?");
   const params = new URLSearchParams(query);
-  const current = Number.parseInt(params.get("v") || "0", 10);
-  const next = Number.isFinite(current) ? current + 1 : 1;
-  params.set("v", String(next));
-  item.url = `${base}?${params.toString()}`;
-  console.log(`Updated resource URL to: ${item.url}`);
+  params.set("v", String(epoch));
+  localItem.url = `${base}?${params.toString()}`;
+  console.log(`Updated resource URL to: ${localItem.url}`);
   updated = true;
 }
 
