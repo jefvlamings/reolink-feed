@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import voluptuous as vol
 
@@ -17,7 +19,7 @@ from homeassistant.components.lovelace.const import (
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ENTITY_ID, EVENT_HOMEASSISTANT_STARTED
+from homeassistant.const import CONF_ENTITY_ID, CONF_ID, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
@@ -98,6 +100,8 @@ async def _async_try_add_lovelace_card_resource(hass: HomeAssistant) -> bool:
         return True
 
     await resources.async_get_info()
+    target_url = _card_resource_url()
+    existing_card_item: dict | None = None
     for item in resources.async_items() or []:
         url = str(item.get(CONF_URL, ""))
         base_url = url.split("?", 1)[0]
@@ -105,13 +109,47 @@ async def _async_try_add_lovelace_card_resource(hass: HomeAssistant) -> bool:
             _LOGGER.debug("Local dev card resource detected; skipping auto-add for %s", CARD_URL_PATH)
             return True
         if base_url == CARD_URL_PATH:
-            return True
+            existing_card_item = item
+            break
 
-    await resources.async_create_item(
-        {CONF_RESOURCE_TYPE_WS: "module", CONF_URL: CARD_URL_PATH}
-    )
-    _LOGGER.info("Added Lovelace resource for Reolink Feed card: %s", CARD_URL_PATH)
+    if existing_card_item is None:
+        await resources.async_create_item(
+            {CONF_RESOURCE_TYPE_WS: "module", CONF_URL: target_url}
+        )
+        _LOGGER.info("Added Lovelace resource for Reolink Feed card: %s", target_url)
+        return True
+
+    if _resource_version_from_url(str(existing_card_item.get(CONF_URL, ""))) == _integration_version():
+        return True
+
+    item_id = existing_card_item.get(CONF_ID)
+    if not isinstance(item_id, str) or not item_id:
+        return True
+    await resources.async_update_item(item_id, {CONF_URL: target_url})
+    _LOGGER.info("Updated Lovelace resource for Reolink Feed card: %s", target_url)
     return True
+
+
+def _integration_version() -> str:
+    manifest_path = Path(__file__).parent / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return "dev"
+    version = manifest.get("version")
+    return str(version) if version else "dev"
+
+
+def _card_resource_url() -> str:
+    return f"{CARD_URL_PATH}?v={_integration_version()}"
+
+
+def _resource_version_from_url(url: str) -> str | None:
+    query = parse_qs(urlsplit(url).query)
+    value = query.get("v")
+    if not value:
+        return None
+    return value[0]
 
 
 @callback
