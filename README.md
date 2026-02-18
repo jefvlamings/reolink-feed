@@ -87,6 +87,24 @@ There are no automated tests yet.
 3. Confirm no errors in logs.
 4. Inspect `.storage` for persisted feed data in the HA config volume.
 
+### Mock test flow (no real camera trigger needed)
+
+Use the Home Assistant service `reolink_feed.mock_detection` from Developer Tools.
+
+Example service data:
+
+```yaml
+entity_id: binary_sensor.deurbel_persoon
+camera_name: Deurbel
+label: person
+duration_s: 8
+create_dummy_snapshot: true
+```
+
+This creates a synthetic timeline item and writes a dummy snapshot file to:
+
+- `config/media/reolink_feed/<camera_slug>/<YYYY-MM-DD>/<HHMMSS>_person_mock.svg`
+
 ### Syntax sanity check
 
 ```bash
@@ -130,4 +148,3 @@ Response:
 5. Custom Lovelace timeline card
 6. HACS packaging + release metadata
 7. Automated tests for merge logic and resolver matching
-

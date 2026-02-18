@@ -8,6 +8,7 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_ENTITY_ID
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
@@ -37,12 +38,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
     await manager.async_start()
     entry.runtime_data = ReolinkFeedData(manager=manager)
     _async_register_ws_commands(hass)
+    _async_register_services(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) -> bool:
     """Unload the config entry."""
     await entry.runtime_data.manager.async_stop()
+    if not hass.config_entries.async_entries(DOMAIN):
+        hass.services.async_remove(DOMAIN, "mock_detection")
     return True
 
 
@@ -52,6 +56,40 @@ def _async_register_ws_commands(hass: HomeAssistant) -> None:
         return
     websocket_api.async_register_command(hass, ws_list_items)
     hass.data[f"{DOMAIN}_ws_registered"] = True
+
+
+@callback
+def _async_register_services(hass: HomeAssistant) -> None:
+    if hass.services.has_service(DOMAIN, "mock_detection"):
+        return
+
+    async def _handle_mock_detection(call) -> None:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            return
+        entry: ReolinkFeedConfigEntry = entries[0]
+        await entry.runtime_data.manager.async_create_mock_detection(
+            source_entity_id=call.data[CONF_ENTITY_ID],
+            camera_name=call.data["camera_name"],
+            label=call.data["label"],
+            duration_s=call.data["duration_s"],
+            create_dummy_snapshot=call.data["create_dummy_snapshot"],
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        "mock_detection",
+        _handle_mock_detection,
+        schema=vol.Schema(
+            {
+                vol.Required(CONF_ENTITY_ID): cv.entity_id,
+                vol.Required("camera_name"): cv.string,
+                vol.Optional("label", default="person"): vol.In(["person", "animal"]),
+                vol.Optional("duration_s", default=8): cv.positive_int,
+                vol.Optional("create_dummy_snapshot", default=True): cv.boolean,
+            }
+        ),
+    )
 
 
 @websocket_api.websocket_command(

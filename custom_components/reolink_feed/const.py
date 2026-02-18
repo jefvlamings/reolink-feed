@@ -6,6 +6,7 @@ DOMAIN = "reolink_feed"
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.items"
 MERGE_WINDOW_SECONDS = 20
+SNAPSHOT_DELAY_SECONDS = 1.0
 MAX_ITEMS = 1000
 SUPPORTED_SUFFIX_TO_LABEL: dict[str, str] = {
     "_persoon": "person",

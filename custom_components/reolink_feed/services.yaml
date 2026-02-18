@@ -1,0 +1,32 @@
+mock_detection:
+  name: Create mock detection
+  description: Create a synthetic detection item for development testing.
+  fields:
+    entity_id:
+      name: Source binary sensor
+      description: Binary sensor entity id used as source.
+      required: true
+      example: binary_sensor.deurbel_persoon
+    camera_name:
+      name: Camera name
+      description: Display camera name for the timeline item.
+      required: true
+      example: Deurbel
+    label:
+      name: Label
+      description: Detection label.
+      required: false
+      example: person
+      default: person
+    duration_s:
+      name: Duration seconds
+      description: Mock detection duration in seconds.
+      required: false
+      example: 8
+      default: 8
+    create_dummy_snapshot:
+      name: Create dummy snapshot
+      description: When true, writes a placeholder image file in /media/reolink_feed.
+      required: false
+      example: true
+      default: true
