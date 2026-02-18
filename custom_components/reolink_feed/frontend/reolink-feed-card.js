@@ -303,6 +303,16 @@ class ReolinkFeedCard extends HTMLElement {
     });
   }
 
+  _mediaFolderDisplayPath(item) {
+    const dt = new Date(item?.start_ts || Date.now());
+    const year = dt.getFullYear();
+    const month = String(dt.getMonth() + 1).padStart(2, "0");
+    const day = String(dt.getDate()).padStart(2, "0");
+    const labelTitle = item?.label === "animal" ? "Animal" : "Person";
+    const camera = item?.camera_name || "Camera";
+    return `/Reolink/${camera}/Low Resolution/${year}-${month}-${day}/${labelTitle}`;
+  }
+
   _labelIcon(label) {
     if (label === "animal") {
       return `
@@ -316,23 +326,6 @@ class ReolinkFeedCard extends HTMLElement {
         <ha-icon icon="mdi:account"></ha-icon>
       </span>
     `;
-  }
-
-  _recordingIcon(recording, itemId) {
-    const status = recording?.status || "pending";
-    const linked = status === "linked";
-    const icon = linked ? "mdi:video" : "mdi:video-off";
-    const filename = this._recordingFilename(recording?.media_content_id);
-    const title = linked ? (filename || "Recording linked") : "Recording not linked";
-    return `<button class="recording-icon ${linked ? "linked" : "off"}" data-item-id="${itemId}" title="${title}" aria-label="${title}"><ha-icon icon="${icon}"></ha-icon></button>`;
-  }
-
-  _recordingFilename(mediaContentId) {
-    if (!mediaContentId || typeof mediaContentId !== "string") return "";
-    if (!mediaContentId.includes("FILE|")) return "";
-    const parts = mediaContentId.split("|");
-    if (parts.length < 5) return "";
-    return parts[4] || "";
   }
 
   _render() {
@@ -353,30 +346,23 @@ class ReolinkFeedCard extends HTMLElement {
           <li class="item" data-id="${item.id}">
             <button class="thumb" aria-label="Open recording preview">
               ${image}
+              <span class="overlay top-left">
+                ${this._labelIcon(item.label)}
+              </span>
+              <span class="overlay top-right">
+                <span class="info-trigger" role="button" tabindex="0" aria-label="Show detection info" title="Show detection info">
+                  <ha-icon icon="mdi:information-outline"></ha-icon>
+                </span>
+              </span>
+              <span class="overlay bottom-left">
+                <span class="line2">${this._formatTime(item.start_ts)} (${this._formatDuration(item.duration_s)})</span>
+              </span>
               <span class="play-overlay" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z"></path>
                 </svg>
               </span>
             </button>
-            <div class="meta">
-              <div class="line1">
-                <span class="camera">${item.camera_name}</span>
-              </div>
-              <div class="line2">At: ${this._formatTime(item.start_ts)}</div>
-              <div class="line3">
-                <span>Duration: ${this._formatDuration(item.duration_s)}</span>
-                ${this._recordingIcon(item.recording, item.id)}
-              </div>
-            </div>
-            <div class="right-col">
-              ${this._labelIcon(item.label)}
-              <div class="item-actions">
-                <button class="info" aria-label="Show detection info" title="Show detection info">
-                  <ha-icon icon="mdi:information-outline"></ha-icon>
-                </button>
-              </div>
-            </div>
           </li>
         `;
       })
@@ -406,7 +392,6 @@ class ReolinkFeedCard extends HTMLElement {
                 ? `<img src="${this._modal.url}" alt="${this._modal.title}" />`
                 : `<video controls autoplay playsinline src="${this._modal.url}"></video>`
             }
-            <a class="fallback" href="${this._modal.url}" target="_blank" rel="noopener">Open in new tab</a>
           </div>
         </div>
       </div>
@@ -419,12 +404,17 @@ class ReolinkFeedCard extends HTMLElement {
     const infoDialogHtml =
       this._infoDialog.open && infoItem
         ? `
-      <ha-dialog open scrimClickAction="" escapeKeyAction="">
+      <ha-dialog open scrimClickAction="close" escapeKeyAction="close">
         <div class="info-head">
           <span>Detection info</span>
           <button class="close-info-top" type="button" aria-label="Close info dialog">✕</button>
         </div>
         <div class="info-body">
+          ${
+            infoItem.snapshot_url
+              ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || "Snapshot"}" loading="lazy" />`
+              : `<div class="placeholder">No snapshot</div>`
+          }
           <div><strong>Camera:</strong> ${infoItem.camera_name || "-"}</div>
           <div><strong>Timestamp:</strong> ${this._formatDateTime(infoItem.start_ts) || "-"}</div>
           <div><strong>Duration:</strong> ${this._formatDuration(infoItem.duration_s)}</div>
@@ -433,13 +423,9 @@ class ReolinkFeedCard extends HTMLElement {
             <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">History</a>
             <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">Logbook</a>
           </div>
-          ${
-            infoItem.snapshot_url
-              ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || "Snapshot"}" loading="lazy" />`
-              : `<div class="placeholder">No snapshot</div>`
-          }
           <div>
-            <a href="/media-browser/browser/${encodeURIComponent(this._mediaBrowserTarget(infoItem, infoItem?.recording?.media_content_id || ""))}" target="_blank" rel="noopener">Open media folder</a>
+            <span><strong>File:</strong> ${this._mediaFolderDisplayPath(infoItem)} </span>
+            <a href="/media-browser/browser/${encodeURIComponent(this._mediaBrowserTarget(infoItem, infoItem?.recording?.media_content_id || ""))}" target="_blank" rel="noopener">(Go to folder)</a>
           </div>
         </div>
         <div class="info-actions">
@@ -462,12 +448,13 @@ class ReolinkFeedCard extends HTMLElement {
         ha-card { padding: 10px; }
         .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 10px; }
         .actions { display: flex; align-items: center; gap: 8px; }
-        button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; }
+        button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
         button.rebuild:hover { background: var(--secondary-background-color); }
         button.rebuild:disabled { opacity: 0.6; cursor: default; }
-        button.refresh-feed { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 30px; height: 30px; padding: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        button.refresh-feed { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
         button.refresh-feed:hover { background: var(--secondary-background-color); }
         button.refresh-feed svg { width: 15px; height: 15px; }
+        button.rebuild ha-icon { --mdc-icon-size: 15px; }
         button.refresh-feed.loading svg { animation: spin 1s linear infinite; }
         button.refresh-feed:disabled { opacity: 0.6; cursor: default; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
@@ -476,27 +463,25 @@ class ReolinkFeedCard extends HTMLElement {
         button.page-nav:hover { background: var(--secondary-background-color); }
         button.page-nav:disabled { opacity: 0.6; cursor: default; }
         ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-        .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
-        .thumb { grid-column: 1 / span 2; position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; line-height: 0; appearance: none; -webkit-appearance: none; }
+        .item { position: relative; padding: 0; border-radius: 10px; overflow: hidden; background: rgba(255, 255, 255, 0.04); }
+        .thumb { position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 10px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; line-height: 0; appearance: none; -webkit-appearance: none; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; will-change: opacity; }
+        .thumb::before { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), inset 0 -48px 40px rgba(0,0,0,0.45), inset 0 40px 28px rgba(0,0,0,0.30); pointer-events: none; z-index: 1; }
+        .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; will-change: opacity; z-index: 2; }
         .thumb:hover .play-overlay, .thumb:focus-visible .play-overlay { opacity: 1; }
         .play-overlay svg { width: 22px; height: 22px; fill: #fff; }
+        .overlay { position: absolute; z-index: 3; display: inline-flex; align-items: center; }
+        .overlay.top-left { top: 8px; left: 8px; }
+        .overlay.top-right { top: 8px; right: 8px; }
+        .overlay.bottom-left { left: 8px; bottom: 8px; max-width: calc(100% - 16px); }
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
-        .line1 { display: flex; gap: 8px; align-items: center; font-size: 13px; }
-        .camera { font-weight: 600; }
-        .right-col { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; min-height: 52px; }
-        .item-actions { display: flex; gap: 6px; align-items: center; }
-        .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
+        .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(2px); }
         .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; }
-        .line2, .line3 { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
-        .line3 { display: flex; justify-content: space-between; }
-        button.recording-icon { border: 0; background: transparent; padding: 0; margin: 0; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-        button.recording-icon ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color); opacity: 0.6; }
-        button.recording-icon:hover ha-icon { opacity: 0.85; }
-        button.info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
-        button.info:hover { background: var(--secondary-background-color); }
-        button.info ha-icon { --mdc-icon-size: 14px; }
+        .line2 { color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 7px; background: rgba(0, 0, 0, 0.40); backdrop-filter: blur(2px); }
+        .info-trigger { border: 1px solid rgba(255,255,255,0.22); background: rgba(0, 0, 0, 0.35); color: #fff; border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; backdrop-filter: blur(2px); }
+        .info-trigger:hover { background: rgba(255, 255, 255, 0.16); }
+        .info-trigger:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+        .info-trigger ha-icon { --mdc-icon-size: 14px; color: #fff; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .empty { color: var(--secondary-text-color); font-size: 13px; padding: 8px 2px; }
         .error { color: var(--error-color); font-size: 12px; white-space: pre-wrap; }
@@ -508,8 +493,6 @@ class ReolinkFeedCard extends HTMLElement {
         .modal-body { padding: 10px; display: grid; gap: 8px; }
         .modal video { width: 100%; max-height: 72vh; background: #000; }
         .modal img { width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
-        .fallback { color: #9cc3ff; font-size: 12px; }
-
         ha-dialog { --dialog-content-padding: 0; }
         .info-head { padding: 14px 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--divider-color); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
         .info-body { padding: 12px 16px; display: grid; gap: 10px; color: var(--primary-text-color); }
@@ -517,6 +500,7 @@ class ReolinkFeedCard extends HTMLElement {
         .info-links a, .info-body a { color: var(--primary-color); text-decoration: none; }
         .info-links a:hover, .info-body a:hover { text-decoration: underline; }
         .info-snapshot { width: 100%; max-height: 280px; object-fit: cover; border-radius: 8px; border: 1px solid var(--divider-color); }
+        .info-body .placeholder { width: 100%; height: 220px; border-radius: 8px; border: 1px solid var(--divider-color); display: grid; place-items: center; color: var(--secondary-text-color); background: rgba(255,255,255,0.03); font-size: 13px; }
         .info-actions { padding: 0 16px 14px 16px; display: flex; justify-content: space-between; gap: 10px; }
         .close-info-top { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         .close-info-top:hover { background: var(--secondary-background-color); }
@@ -535,9 +519,11 @@ class ReolinkFeedCard extends HTMLElement {
                 <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
                 <polyline points="21 3 21 9 15 9"></polyline>
               </svg>
+              <span>Refresh</span>
             </button>
-            <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Rebuild feed from history">
-              ${this._rebuilding ? "Rebuilding..." : "Rebuild Feed"}
+            <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Reset feed from history">
+              <ha-icon icon="mdi:nuke"></ha-icon>
+              <span>${this._rebuilding ? "Resetting..." : "Reset"}</span>
             </button>
           </div>
         </div>
@@ -554,8 +540,7 @@ class ReolinkFeedCard extends HTMLElement {
       if (!item) return;
 
       const thumb = el.querySelector("button.thumb");
-      const rec = el.querySelector("button.recording-icon");
-      const info = el.querySelector("button.info");
+      const info = el.querySelector(".info-trigger");
 
       if (thumb) {
         thumb.addEventListener("click", (ev) => {
@@ -563,15 +548,16 @@ class ReolinkFeedCard extends HTMLElement {
           this._openFromThumbnail(item);
         });
       }
-      if (rec) {
-        rec.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          this._openMediaBrowserForRecording(item);
-        });
-      }
       if (info) {
         info.addEventListener("click", (ev) => {
           ev.preventDefault();
+          ev.stopPropagation();
+          this._openInfoDialog(item);
+        });
+        info.addEventListener("keydown", (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " ") return;
+          ev.preventDefault();
+          ev.stopPropagation();
           this._openInfoDialog(item);
         });
       }
