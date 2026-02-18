@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 import logging
 from pathlib import Path
+import re
 import uuid
 
 from homeassistant.components.camera import async_get_image
+from homeassistant.components.media_player import BrowseError
+from homeassistant.components.media_source import async_browse_media
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -19,6 +22,10 @@ from homeassistant.util import slugify
 from .const import (
     MAX_ITEMS,
     MERGE_WINDOW_SECONDS,
+    RECORDING_DEFAULT_CLIP_DURATION_SECONDS,
+    RECORDING_RETRY_DELAYS_SECONDS,
+    RECORDING_WINDOW_END_PAD_SECONDS,
+    RECORDING_WINDOW_START_PAD_SECONDS,
     SNAPSHOT_DELAY_SECONDS,
     SUPPORTED_SUFFIX_TO_LABEL,
 )
@@ -26,6 +33,9 @@ from .models import DetectionItem
 from .storage import DetectionStore
 
 _LOGGER = logging.getLogger(__name__)
+_CLIP_TITLE_PATTERN = re.compile(
+    r"^(?P<start>\d{1,2}:\d{2}:\d{2})(?:\s+(?P<duration>\d+:\d{2}:\d{2}))?"
+)
 
 
 class ReolinkFeedManager:
@@ -41,6 +51,7 @@ class ReolinkFeedManager:
         self._last_closed_item_id_by_key: dict[tuple[str, str], str] = {}
         self._snapshot_camera_by_sensor: dict[str, str | None] = {}
         self._unsub_snapshot_timers: dict[str, Callable[[], None]] = {}
+        self._unsub_recording_timers: dict[str, list[Callable[[], None]]] = {}
         self._unsub_state_changed: Callable[[], None] | None = None
         self._unsub_delayed_save: Callable[[], None] | None = None
 
@@ -63,6 +74,10 @@ class ReolinkFeedManager:
         for unsub in self._unsub_snapshot_timers.values():
             unsub()
         self._unsub_snapshot_timers.clear()
+        for timer_unsubs in self._unsub_recording_timers.values():
+            for unsub in timer_unsubs:
+                unsub()
+        self._unsub_recording_timers.clear()
         await self._store.async_save(self._items)
 
     def get_items(self) -> list[DetectionItem]:
@@ -134,6 +149,7 @@ class ReolinkFeedManager:
             last_closed.end_ts = None
             last_closed.duration_s = None
             last_closed.recording = {"status": "pending"}
+            self._cancel_recording_resolution(last_closed.id)
             self._open_item_id_by_key[key] = last_closed.id
             self._last_closed_item_id_by_key.pop(key, None)
             self._schedule_save()
@@ -166,6 +182,7 @@ class ReolinkFeedManager:
         self._open_item_id_by_key.pop(key, None)
         self._last_closed_item_id_by_key[key] = item.id
         self._schedule_save()
+        self._schedule_recording_resolution(item.id)
 
     def _get_item_by_id(self, item_id: str | None) -> DetectionItem | None:
         if not item_id:
@@ -219,7 +236,39 @@ class ReolinkFeedManager:
             self._items = self._items[:MAX_ITEMS]
         self._last_closed_item_id_by_key[(camera_name, label)] = item.id
         self._schedule_save()
+        self._schedule_recording_resolution(item.id)
         return item
+
+    async def async_resolve_recording(self, item_id: str, *, final_attempt: bool = False) -> dict:
+        """Attempt to link an item to a Reolink clip."""
+        item = self._get_item_by_id(item_id)
+        if item is None:
+            raise ValueError(f"Unknown item id: {item_id}")
+
+        recording = item.recording or {"status": "pending"}
+        if recording.get("status") == "linked":
+            return recording
+
+        media_content_id = await self._async_find_recording_media_content_id(item)
+        if media_content_id:
+            item.recording = {
+                "status": "linked",
+                "media_content_id": media_content_id,
+                "resolved_at": datetime.now().astimezone().isoformat(),
+            }
+            self._cancel_recording_resolution(item.id)
+            self._schedule_save()
+            return item.recording
+
+        if final_attempt:
+            item.recording = {"status": "not_found"}
+            self._cancel_recording_resolution(item.id)
+            self._schedule_save()
+            return item.recording
+
+        item.recording = {"status": "pending"}
+        self._schedule_save()
+        return item.recording
 
     def _schedule_snapshot_capture(self, item_id: str, source_entity_id: str) -> None:
         existing = self._unsub_snapshot_timers.pop(item_id, None)
@@ -236,6 +285,28 @@ class ReolinkFeedManager:
         self._unsub_snapshot_timers[item_id] = async_call_later(
             self.hass, SNAPSHOT_DELAY_SECONDS, _capture_callback
         )
+
+    def _schedule_recording_resolution(self, item_id: str) -> None:
+        self._cancel_recording_resolution(item_id)
+        timer_unsubs: list[Callable[[], None]] = []
+
+        for index, delay_s in enumerate(RECORDING_RETRY_DELAYS_SECONDS):
+
+            @callback
+            def _resolve_callback(_now: datetime, idx: int = index) -> None:
+                is_final = idx == len(RECORDING_RETRY_DELAYS_SECONDS) - 1
+                self.hass.async_create_task(
+                    self.async_resolve_recording(item_id, final_attempt=is_final)
+                )
+
+            timer_unsubs.append(async_call_later(self.hass, float(delay_s), _resolve_callback))
+
+        self._unsub_recording_timers[item_id] = timer_unsubs
+
+    def _cancel_recording_resolution(self, item_id: str) -> None:
+        timer_unsubs = self._unsub_recording_timers.pop(item_id, [])
+        for unsub in timer_unsubs:
+            unsub()
 
     async def _async_capture_snapshot(self, item_id: str, source_entity_id: str) -> None:
         item = self._get_item_by_id(item_id)
@@ -275,6 +346,63 @@ class ReolinkFeedManager:
 
         item.snapshot_url = f"/media/{self._media_source_id}/{relative.as_posix()}"
         self._schedule_save()
+
+    async def _async_find_recording_media_content_id(self, item: DetectionItem) -> str | None:
+        if item.label not in {"person", "animal"}:
+            return None
+
+        start_dt = item.start_dt
+        end_dt = item.end_dt or start_dt
+        window_start = start_dt - timedelta(seconds=RECORDING_WINDOW_START_PAD_SECONDS)
+        window_end = end_dt + timedelta(seconds=RECORDING_WINDOW_END_PAD_SECONDS)
+
+        day_candidates = {
+            window_start.date(),
+            start_dt.date(),
+            end_dt.date(),
+            window_end.date(),
+        }
+        event_folder = "Person" if item.label == "person" else "Animal"
+
+        best: tuple[float, float, str] | None = None
+        for day in sorted(day_candidates):
+            identifier = (
+                f"{item.camera_name}/Low resolution/{day.year}/{day.month}/{day.day}/{event_folder}"
+            )
+            media_id = f"media-source://reolink/{identifier}"
+            try:
+                folder = await async_browse_media(self.hass, media_id)
+            except BrowseError:
+                continue
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Browse failed for %s: %s", media_id, err)
+                continue
+
+            if not folder.children:
+                continue
+
+            for child in folder.children:
+                if not child.media_content_id:
+                    continue
+                clip = _clip_bounds_from_title(day, child.title or "", start_dt.tzinfo)
+                if clip is None:
+                    continue
+                clip_start, clip_end = clip
+                overlap = _overlap_seconds(window_start, window_end, clip_start, clip_end)
+                start_distance = abs((clip_start - start_dt).total_seconds())
+                score = (overlap, -start_distance, child.media_content_id)
+                if best is None or score > best:
+                    best = score
+
+        if best is None:
+            return None
+        if best[0] <= 0:
+            # If no overlap, only accept a near-start match within padded window.
+            nearest = -best[1]
+            max_nearest = RECORDING_WINDOW_START_PAD_SECONDS + RECORDING_WINDOW_END_PAD_SECONDS
+            if nearest > max_nearest:
+                return None
+        return best[2]
 
     async def _async_write_dummy_snapshot(self, item: DetectionItem) -> str:
         started_local = item.start_dt.astimezone()
@@ -353,6 +481,50 @@ def _camera_preference_score(entity_id: str) -> tuple[int, str]:
     if "low" in object_id or "sub" in object_id or "vloeiend" in object_id:
         return (3, object_id)
     return (10, object_id)
+
+
+def _clip_bounds_from_title(
+    day: date, title: str, tzinfo_value: tzinfo | None
+) -> tuple[datetime, datetime] | None:
+    match = _CLIP_TITLE_PATTERN.match(title.strip())
+    if not match:
+        return None
+    start_token = match.group("start")
+    duration_token = match.group("duration")
+    try:
+        start_time = datetime.strptime(start_token, "%H:%M:%S").time()
+    except ValueError:
+        return None
+
+    clip_start = datetime.combine(day, start_time, tzinfo=tzinfo_value)
+    duration_seconds = (
+        _duration_token_to_seconds(duration_token)
+        if duration_token
+        else RECORDING_DEFAULT_CLIP_DURATION_SECONDS
+    )
+    clip_end = clip_start + timedelta(seconds=max(1, duration_seconds))
+    return clip_start, clip_end
+
+
+def _duration_token_to_seconds(token: str) -> int:
+    parts = token.split(":")
+    if len(parts) != 3:
+        return RECORDING_DEFAULT_CLIP_DURATION_SECONDS
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2])
+    except ValueError:
+        return RECORDING_DEFAULT_CLIP_DURATION_SECONDS
+    return max(1, hours * 3600 + minutes * 60 + seconds)
+
+
+def _overlap_seconds(
+    window_start: datetime, window_end: datetime, clip_start: datetime, clip_end: datetime
+) -> float:
+    start = max(window_start, clip_start)
+    end = min(window_end, clip_end)
+    return max(0.0, (end - start).total_seconds())
 
 
 def _resolve_media_target(hass: HomeAssistant) -> tuple[str, str]:

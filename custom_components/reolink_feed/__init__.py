@@ -55,6 +55,7 @@ def _async_register_ws_commands(hass: HomeAssistant) -> None:
     if hass.data.get(f"{DOMAIN}_ws_registered"):
         return
     websocket_api.async_register_command(hass, ws_list_items)
+    websocket_api.async_register_command(hass, ws_resolve_recording)
     hass.data[f"{DOMAIN}_ws_registered"] = True
 
 
@@ -130,3 +131,29 @@ async def ws_list_items(
             break
 
     connection.send_result(msg["id"], {"items": filtered})
+
+
+@websocket_api.websocket_command(
+    {
+        "type": "reolink_feed/resolve_recording",
+        vol.Required("id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_resolve_recording(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Resolve a recording for one item."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "reolink_feed is not loaded")
+        return
+
+    entry: ReolinkFeedConfigEntry = entries[0]
+    try:
+        recording = await entry.runtime_data.manager.async_resolve_recording(msg["id"])
+    except ValueError:
+        connection.send_error(msg["id"], "not_found", "item id not found")
+        return
+
+    connection.send_result(msg["id"], recording)

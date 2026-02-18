@@ -122,6 +122,7 @@ PY
 Command:
 
 - `reolink_feed/list`
+- `reolink_feed/resolve_recording`
 
 Request fields:
 - `since_hours` (optional, default `24`)
@@ -130,6 +131,12 @@ Request fields:
 
 Response:
 - `{ "items": [...] }` sorted newest first
+
+`reolink_feed/resolve_recording` request:
+- `{ "id": "<item_id>" }`
+
+`reolink_feed/resolve_recording` response:
+- `{ "status": "linked|pending|not_found", "media_content_id": "...", "resolved_at": "..." }`
 
 ## V1 Scope
 
