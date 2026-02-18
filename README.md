@@ -164,7 +164,7 @@ Response:
 - `{ "items": [...] }` sorted newest first
 
 `reolink_feed/resolve_recording` request:
-- `{ "id": "<item_id>" }`
+- `{ "item_id": "<item_id>" }`
 
 `reolink_feed/resolve_recording` response:
 - `{ "status": "linked|pending|not_found", "media_content_id": "...", "resolved_at": "..." }`

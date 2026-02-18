@@ -112,6 +112,7 @@ async def ws_list_items(
         return
 
     entry: ReolinkFeedConfigEntry = entries[0]
+    await entry.runtime_data.manager.async_migrate_legacy_snapshot_urls()
     items = entry.runtime_data.manager.get_items()
 
     since_hours = msg["since_hours"]
@@ -136,7 +137,7 @@ async def ws_list_items(
 @websocket_api.websocket_command(
     {
         "type": "reolink_feed/resolve_recording",
-        vol.Required("id"): cv.string,
+        vol.Required("item_id"): cv.string,
     }
 )
 @websocket_api.async_response
@@ -151,7 +152,7 @@ async def ws_resolve_recording(
 
     entry: ReolinkFeedConfigEntry = entries[0]
     try:
-        recording = await entry.runtime_data.manager.async_resolve_recording(msg["id"])
+        recording = await entry.runtime_data.manager.async_resolve_recording(msg["item_id"])
     except ValueError:
         connection.send_error(msg["id"], "not_found", "item id not found")
         return

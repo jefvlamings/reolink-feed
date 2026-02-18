@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, tzinfo
 import logging
 from pathlib import Path
 import re
+import shutil
+from typing import Any
 import uuid
 
 from homeassistant.components.camera import async_get_image
@@ -44,8 +46,7 @@ class ReolinkFeedManager:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self._store = DetectionStore(hass)
-        self._media_source_id, media_root = _resolve_media_target(hass)
-        self._media_root = Path(media_root)
+        self._www_root = Path(hass.config.path("www"))
         self._items: list[DetectionItem] = []
         self._open_item_id_by_key: dict[tuple[str, str], str] = {}
         self._last_closed_item_id_by_key: dict[tuple[str, str], str] = {}
@@ -59,10 +60,13 @@ class ReolinkFeedManager:
     async def async_start(self) -> None:
         """Load initial state and begin listening."""
         self._items = await self._store.async_load()
+        changed = await self._async_migrate_snapshot_paths()
         self._rebuild_indexes()
         self._unsub_state_changed = self.hass.bus.async_listen(
             EVENT_STATE_CHANGED, self._async_handle_state_changed
         )
+        if changed:
+            await self._store.async_save(self._items)
 
     async def async_stop(self) -> None:
         """Stop listeners and flush any pending save."""
@@ -84,6 +88,13 @@ class ReolinkFeedManager:
     def get_items(self) -> list[DetectionItem]:
         """Return newest-first feed items."""
         return self._items
+
+    async def async_migrate_legacy_snapshot_urls(self) -> bool:
+        """Public migration trigger for legacy snapshot URLs."""
+        changed = await self._async_migrate_snapshot_paths()
+        if changed:
+            await self._store.async_save(self._items)
+        return changed
 
     def _rebuild_indexes(self) -> None:
         self._open_item_id_by_key.clear()
@@ -333,7 +344,7 @@ class ReolinkFeedManager:
         day_folder = started_local.strftime("%Y-%m-%d")
         filename = f"{started_local.strftime('%H%M%S')}_{item.label}.jpg"
         relative = Path("reolink_feed") / camera_slug / day_folder / filename
-        absolute = self._media_root / relative
+        absolute = self._www_root / relative
 
         try:
             await self.hass.async_add_executor_job(_write_snapshot_file, absolute, image.content)
@@ -341,15 +352,16 @@ class ReolinkFeedManager:
             _LOGGER.warning("Failed to persist snapshot %s: %s", absolute, err)
             return
 
-        item.snapshot_url = f"/media/{self._media_source_id}/{relative.as_posix()}"
+        item.snapshot_url = f"/local/{relative.as_posix()}"
         self._schedule_save()
 
     async def _async_find_recording_media_content_id(self, item: DetectionItem) -> str | None:
         if item.label not in {"person", "animal"}:
             return None
 
-        start_dt = item.start_dt
-        end_dt = item.end_dt or start_dt
+        # Reolink clip titles are wall-clock times in local camera timezone.
+        start_dt = item.start_dt.astimezone()
+        end_dt = (item.end_dt or item.start_dt).astimezone()
         window_start = start_dt - timedelta(seconds=RECORDING_WINDOW_START_PAD_SECONDS)
         window_end = end_dt + timedelta(seconds=RECORDING_WINDOW_END_PAD_SECONDS)
 
@@ -359,27 +371,67 @@ class ReolinkFeedManager:
             end_dt.date(),
             window_end.date(),
         }
-        event_folder = "Person" if item.label == "person" else "Animal"
+        label_title = "Person" if item.label == "person" else "Animal"
 
+        try:
+            root = await async_browse_media(self.hass, "media-source://reolink")
+        except BrowseError:
+            return None
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to browse reolink media root: %s", err)
+            return None
+
+        camera_node = _select_camera_node(root.children or [], item.camera_name)
+        if camera_node is None or not camera_node.media_content_id:
+            return None
+
+        try:
+            resolution_root = await async_browse_media(self.hass, camera_node.media_content_id)
+        except Exception:
+            return None
+
+        resolution_node = _select_low_resolution_node(resolution_root.children or [])
+        if resolution_node is None or not resolution_node.media_content_id:
+            return None
+
+        try:
+            days_root = await async_browse_media(self.hass, resolution_node.media_content_id)
+        except Exception:
+            return None
+
+        day_nodes = _select_day_nodes(days_root.children or [], day_candidates)
         best: tuple[float, float, str] | None = None
-        for day in sorted(day_candidates):
-            identifier = (
-                f"{item.camera_name}/Low resolution/{day.year}/{day.month}/{day.day}/{event_folder}"
-            )
-            media_id = f"media-source://reolink/{identifier}"
+        for day_node, day in day_nodes:
+            if not day_node.media_content_id:
+                continue
             try:
-                folder = await async_browse_media(self.hass, media_id)
-            except BrowseError:
-                continue
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Browse failed for %s: %s", media_id, err)
+                day_listing = await async_browse_media(self.hass, day_node.media_content_id)
+            except Exception:
                 continue
 
-            if not folder.children:
-                continue
+            file_nodes: list[Any] = []
+            children = day_listing.children or []
+            matching_event_dirs = [
+                child
+                for child in children
+                if child.can_expand and (child.title or "").strip().lower() == label_title.lower()
+            ]
+            if matching_event_dirs:
+                for event_dir in matching_event_dirs:
+                    if not event_dir.media_content_id:
+                        continue
+                    try:
+                        event_listing = await async_browse_media(
+                            self.hass, event_dir.media_content_id
+                        )
+                    except Exception:
+                        continue
+                    file_nodes.extend(event_listing.children or [])
+            else:
+                file_nodes.extend(children)
 
-            for child in folder.children:
-                if not child.media_content_id:
+            for child in file_nodes:
+                if not child.media_content_id or child.can_expand:
                     continue
                 clip = _clip_bounds_from_title(day, child.title or "", start_dt.tzinfo)
                 if clip is None:
@@ -407,11 +459,41 @@ class ReolinkFeedManager:
         day_folder = started_local.strftime("%Y-%m-%d")
         filename = f"{started_local.strftime('%H%M%S')}_{item.label}_mock.svg"
         relative = Path("reolink_feed") / camera_slug / day_folder / filename
-        absolute = self._media_root / relative
+        absolute = self._www_root / relative
         await self.hass.async_add_executor_job(
             _write_dummy_svg_file, absolute, item.camera_name, item.label, item.start_ts
         )
-        return f"/media/{self._media_source_id}/{relative.as_posix()}"
+        return f"/local/{relative.as_posix()}"
+
+    async def _async_migrate_snapshot_paths(self) -> bool:
+        """Migrate legacy /media/local snapshot URLs to /local."""
+        changed = False
+        legacy_prefix = "/media/local/reolink_feed/"
+        new_prefix = "/local/reolink_feed/"
+        new_root = self._www_root / "reolink_feed"
+        legacy_roots = _candidate_legacy_snapshot_roots(self.hass)
+
+        for item in self._items:
+            snapshot_url = item.snapshot_url
+            if not snapshot_url or not snapshot_url.startswith(legacy_prefix):
+                continue
+
+            relative = snapshot_url[len(legacy_prefix) :]
+            item.snapshot_url = f"{new_prefix}{relative}"
+            changed = True
+
+            dst = new_root / relative
+            if dst.exists():
+                continue
+            src = next((root / relative for root in legacy_roots if (root / relative).exists()), None)
+            if src is None:
+                continue
+            try:
+                await self.hass.async_add_executor_job(_copy_file, src, dst)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Failed to migrate snapshot file %s -> %s: %s", src, dst, err)
+
+        return changed
 
     def _resolve_snapshot_camera(self, source_entity_id: str) -> str | None:
         if source_entity_id in self._snapshot_camera_by_sensor:
@@ -499,6 +581,29 @@ def _write_dummy_svg_file(path: Path, camera_name: str, label: str, start_ts: st
     path.write_text(svg, encoding="utf-8")
 
 
+def _copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
+def _candidate_legacy_snapshot_roots(hass: HomeAssistant) -> list[Path]:
+    roots: list[Path] = []
+    roots.append(Path(hass.config.path("media")) / "reolink_feed")
+    for media_dir in hass.config.media_dirs.values():
+        roots.append(Path(media_dir) / "reolink_feed")
+    roots.append(Path("/media") / "reolink_feed")
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(root)
+    return deduped
+
+
 def _camera_preference_score(entity_id: str) -> tuple[int, str]:
     object_id = entity_id.split(".", 1)[1].lower()
     if "telephoto" in object_id:
@@ -558,14 +663,73 @@ def _overlap_seconds(
     return max(0.0, (end - start).total_seconds())
 
 
-def _resolve_media_target(hass: HomeAssistant) -> tuple[str, str]:
-    media_dirs = hass.config.media_dirs
-    if "local" in media_dirs:
-        return ("local", media_dirs["local"])
-    if media_dirs:
-        source_id, root = next(iter(media_dirs.items()))
-        return (source_id, root)
-    return ("local", hass.config.path("media"))
+def _select_camera_node(children: list[Any], camera_name: str) -> Any | None:
+    target = camera_name.strip().lower()
+    best: tuple[int, Any] | None = None
+    for child in children:
+        title = (getattr(child, "title", "") or "").strip().lower()
+        if not title:
+            continue
+        if title == target:
+            return child
+        if target in title or title in target:
+            score = 1
+        else:
+            score = 10
+        if best is None or score < best[0]:
+            best = (score, child)
+    return best[1] if best else None
+
+
+def _select_low_resolution_node(children: list[Any]) -> Any | None:
+    best: tuple[int, Any] | None = None
+    for child in children:
+        title = (getattr(child, "title", "") or "").lower()
+        identifier = (getattr(child, "media_content_id", "") or "").lower()
+        if "telephoto" in title or "autotrack_" in identifier:
+            score = 100
+        elif "low resolution" in title:
+            score = 0
+        elif "low" in title or "fluent" in title or "|sub" in identifier:
+            score = 1
+        else:
+            score = 10
+        if best is None or score < best[0]:
+            best = (score, child)
+    return best[1] if best else None
+
+
+def _select_day_nodes(children: list[Any], wanted_days: set[date]) -> list[tuple[Any, date]]:
+    result: list[tuple[Any, date]] = []
+    for child in children:
+        parsed = _parse_day_from_media_node(child)
+        if parsed is None:
+            continue
+        if parsed in wanted_days:
+            result.append((child, parsed))
+    return result
+
+
+def _parse_day_from_media_node(node: Any) -> date | None:
+    media_id = (getattr(node, "media_content_id", "") or "")
+    title = (getattr(node, "title", "") or "")
+
+    if "DAY|" in media_id:
+        try:
+            identifier = media_id.split("media-source://reolink/", 1)[1]
+            parts = identifier.split("|")
+            if parts[0] == "DAY" and len(parts) >= 7:
+                return date(int(parts[4]), int(parts[5]), int(parts[6].split("/")[0]))
+        except (IndexError, ValueError):
+            pass
+
+    match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})", title)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+    return None
 
 
 def _camera_name_from_state(entity_id: str, friendly_name: str | None) -> str:
