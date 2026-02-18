@@ -13,6 +13,8 @@ RECORDING_WINDOW_END_PAD_SECONDS = 30
 RECORDING_DEFAULT_CLIP_DURATION_SECONDS = 30
 MAX_ITEMS = 1000
 SUPPORTED_SUFFIX_TO_LABEL: dict[str, str] = {
+    "_person": "person",
+    "_animal": "animal",
     "_persoon": "person",
     "_dier": "animal",
 }

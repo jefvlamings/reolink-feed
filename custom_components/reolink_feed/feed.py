@@ -50,6 +50,7 @@ class ReolinkFeedManager:
         self._open_item_id_by_key: dict[tuple[str, str], str] = {}
         self._last_closed_item_id_by_key: dict[tuple[str, str], str] = {}
         self._snapshot_camera_by_sensor: dict[str, str | None] = {}
+        self._label_by_sensor: dict[str, str | None] = {}
         self._unsub_snapshot_timers: dict[str, Callable[[], None]] = {}
         self._unsub_recording_timers: dict[str, list[Callable[[], None]]] = {}
         self._unsub_state_changed: Callable[[], None] | None = None
@@ -102,11 +103,7 @@ class ReolinkFeedManager:
         if not entity_id.startswith("binary_sensor."):
             return
 
-        label = None
-        for suffix, mapped_label in SUPPORTED_SUFFIX_TO_LABEL.items():
-            if entity_id.endswith(suffix):
-                label = mapped_label
-                break
+        label = self._resolve_detection_label(entity_id)
         if label is None:
             return
 
@@ -444,6 +441,40 @@ class ReolinkFeedManager:
         selected = candidates[0]
         self._snapshot_camera_by_sensor[source_entity_id] = selected
         return selected
+
+    def _resolve_detection_label(self, entity_id: str) -> str | None:
+        if entity_id in self._label_by_sensor:
+            return self._label_by_sensor[entity_id]
+
+        ent_reg = er.async_get(self.hass)
+        entry = ent_reg.async_get(entity_id)
+        if entry is not None:
+            # Reolink translation keys / unique IDs are stable across HA UI languages.
+            translation_key = (entry.translation_key or "").lower()
+            if translation_key == "person":
+                self._label_by_sensor[entity_id] = "person"
+                return "person"
+            if translation_key in {"animal", "pet"}:
+                self._label_by_sensor[entity_id] = "animal"
+                return "animal"
+
+            unique_id = (entry.unique_id or "").lower()
+            if unique_id.endswith("_person"):
+                self._label_by_sensor[entity_id] = "person"
+                return "person"
+            if unique_id.endswith("_pet") or unique_id.endswith("_animal"):
+                self._label_by_sensor[entity_id] = "animal"
+                return "animal"
+
+        # Fallback for setups where registry metadata is missing.
+        object_id = entity_id.split(".", 1)[1].lower()
+        for suffix, mapped_label in SUPPORTED_SUFFIX_TO_LABEL.items():
+            if object_id.endswith(suffix):
+                self._label_by_sensor[entity_id] = mapped_label
+                return mapped_label
+
+        self._label_by_sensor[entity_id] = None
+        return None
 
 
 def _write_snapshot_file(path: Path, data: bytes) -> None:
