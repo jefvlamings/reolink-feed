@@ -392,7 +392,7 @@ class ReolinkFeedCard extends HTMLElement {
         button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
         button.page-nav:hover { background: var(--secondary-background-color); }
         button.page-nav:disabled { opacity: 0.6; cursor: default; }
-        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
         .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
         .thumb { grid-column: 1 / span 2; position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; line-height: 0; appearance: none; -webkit-appearance: none; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
