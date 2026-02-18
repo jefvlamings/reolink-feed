@@ -7,7 +7,6 @@ class ReolinkFeedCard extends HTMLElement {
     this._filteredItems = [];
     this._error = null;
     this._loading = false;
-    this._refreshTimer = null;
     this._resolvingIds = new Set();
     this._rebuilding = false;
     this._page = 1;
@@ -19,12 +18,10 @@ class ReolinkFeedCard extends HTMLElement {
     this._config = {
       labels: ["person", "animal"],
       cameras: [],
-      refresh_seconds: 20,
       per_entity_changes: 400,
       page_size: 20,
       ...config,
     };
-    this._scheduleRefresh();
     this._render();
     this._loadItems();
   }
@@ -46,28 +43,8 @@ class ReolinkFeedCard extends HTMLElement {
     }
   }
 
-  disconnectedCallback() {
-    if (this._refreshTimer) {
-      clearInterval(this._refreshTimer);
-      this._refreshTimer = null;
-    }
-  }
-
   getCardSize() {
     return 6;
-  }
-
-  _scheduleRefresh() {
-    if (this._refreshTimer) {
-      clearInterval(this._refreshTimer);
-    }
-    if (!this._config || !this._config.refresh_seconds) {
-      return;
-    }
-    this._refreshTimer = setInterval(
-      () => this._loadItems(),
-      Math.max(5, this._config.refresh_seconds) * 1000
-    );
   }
 
   _applyFilters() {
@@ -103,7 +80,9 @@ class ReolinkFeedCard extends HTMLElement {
     }
     this._loading = true;
     this._error = null;
-    this._render();
+    if (!this._modal?.open) {
+      this._render();
+    }
     try {
       const result = await this._hass.callWS({
         type: "reolink_feed/list",
@@ -115,7 +94,9 @@ class ReolinkFeedCard extends HTMLElement {
       this._error = err?.message || String(err);
     } finally {
       this._loading = false;
-      this._render();
+      if (!this._modal?.open) {
+        this._render();
+      }
     }
   }
 
@@ -397,9 +378,15 @@ class ReolinkFeedCard extends HTMLElement {
         :host { display: block; }
         ha-card { padding: 10px; }
         .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .actions { display: flex; align-items: center; gap: 8px; }
         button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; }
         button.rebuild:hover { background: var(--secondary-background-color); }
         button.rebuild:disabled { opacity: 0.6; cursor: default; }
+        button.refresh-feed { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 30px; height: 30px; padding: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        button.refresh-feed:hover { background: var(--secondary-background-color); }
+        button.refresh-feed svg { width: 15px; height: 15px; }
+        button.refresh-feed.loading svg { animation: spin 1s linear infinite; }
+        button.refresh-feed:disabled { opacity: 0.6; cursor: default; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
         .page-info { color: var(--secondary-text-color); font-size: 12px; min-width: 84px; text-align: center; }
         button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
@@ -442,9 +429,17 @@ class ReolinkFeedCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="topbar">
-          <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Rebuild feed from history">
-            ${this._rebuilding ? "Rebuilding..." : "Rebuild Feed"}
-          </button>
+          <div class="actions">
+            <button class="refresh-feed${this._loading ? " loading" : ""}" ${this._loading ? "disabled" : ""} aria-label="Refresh feed data" title="Refresh feed data">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                <polyline points="21 3 21 9 15 9"></polyline>
+              </svg>
+            </button>
+            <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Rebuild feed from history">
+              ${this._rebuilding ? "Rebuilding..." : "Rebuild Feed"}
+            </button>
+          </div>
         </div>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">No detections in range.</div>`}
@@ -485,6 +480,11 @@ class ReolinkFeedCard extends HTMLElement {
     rebuildButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
       this._rebuildFromHistory();
+    });
+    const refreshFeedButton = this.shadowRoot.querySelector("button.refresh-feed");
+    refreshFeedButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      this._loadItems();
     });
 
     this.shadowRoot.querySelectorAll("button.page-nav").forEach((el) => {
@@ -564,7 +564,6 @@ class ReolinkFeedCardEditor extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    const refreshSeconds = Number(this._config?.refresh_seconds ?? 20);
     const pageSize = Number(this._config?.page_size ?? 20);
     const labels = new Set(Array.isArray(this._config?.labels) ? this._config.labels : ["person", "animal"]);
     this.shadowRoot.innerHTML = `
@@ -586,10 +585,6 @@ class ReolinkFeedCardEditor extends HTMLElement {
       </style>
       <div class="grid">
         <div class="field">
-          <label for="refresh_seconds">Refresh seconds</label>
-          <input id="refresh_seconds" type="number" min="5" value="${refreshSeconds}" />
-        </div>
-        <div class="field">
           <label for="page_size">Page size</label>
           <input id="page_size" type="number" min="1" max="100" value="${pageSize}" />
         </div>
@@ -603,9 +598,6 @@ class ReolinkFeedCardEditor extends HTMLElement {
       </div>
     `;
 
-    this.shadowRoot.querySelector("#refresh_seconds")?.addEventListener("change", (ev) => {
-      this._onNumberChange("refresh_seconds", ev.target.value, 20);
-    });
     this.shadowRoot.querySelector("#page_size")?.addEventListener("change", (ev) => {
       this._onNumberChange("page_size", ev.target.value, 20);
     });

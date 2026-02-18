@@ -87,7 +87,6 @@ labels:
 cameras:
   - Deurbel
   - Tuinhuis
-refresh_seconds: 20
 page_size: 20
 ```
 
