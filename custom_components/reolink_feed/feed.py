@@ -135,6 +135,22 @@ class ReolinkFeedManager:
         _LOGGER.info("Pruned %s expired reolink feed items", len(removed))
         return len(removed)
 
+    async def async_delete_item(self, item_id: str) -> None:
+        """Delete one feed item and its snapshot."""
+        item = self._get_item_by_id(item_id)
+        if item is None:
+            raise ValueError(f"Unknown item id: {item_id}")
+
+        self._cancel_recording_resolution(item.id)
+        snapshot_unsub = self._unsub_snapshot_timers.pop(item.id, None)
+        if snapshot_unsub:
+            snapshot_unsub()
+
+        self._items = [existing for existing in self._items if existing.id != item.id]
+        await self._async_delete_snapshots_for_items([item])
+        self._rebuild_indexes()
+        await self._store.async_save(self._items)
+
     def _schedule_cleanup(self) -> None:
         if self._unsub_cleanup_timer is not None:
             self._unsub_cleanup_timer()

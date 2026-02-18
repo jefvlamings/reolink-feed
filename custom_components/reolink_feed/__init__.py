@@ -159,6 +159,7 @@ def _async_register_ws_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_list_items)
     websocket_api.async_register_command(hass, ws_resolve_recording)
     websocket_api.async_register_command(hass, ws_rebuild_from_history)
+    websocket_api.async_register_command(hass, ws_delete_item)
     hass.data[f"{DOMAIN}_ws_registered"] = True
 
 
@@ -286,3 +287,29 @@ async def ws_rebuild_from_history(
         return
 
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        "type": "reolink_feed/delete_item",
+        vol.Required("item_id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_item(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Delete one feed item and its snapshot."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "reolink_feed is not loaded")
+        return
+
+    entry: ReolinkFeedConfigEntry = entries[0]
+    try:
+        await entry.runtime_data.manager.async_delete_item(msg["item_id"])
+    except ValueError:
+        connection.send_error(msg["id"], "not_found", "item id not found")
+        return
+
+    connection.send_result(msg["id"], {"ok": True})

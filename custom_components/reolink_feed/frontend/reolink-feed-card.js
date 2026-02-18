@@ -11,6 +11,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._rebuilding = false;
     this._page = 1;
     this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
+    this._infoDialog = { open: false, itemId: "" };
     this.attachShadow({ mode: "open" });
   }
 
@@ -202,6 +203,33 @@ class ReolinkFeedCard extends HTMLElement {
     this._render();
   }
 
+  _openInfoDialog(item) {
+    if (!item?.id) return;
+    this._infoDialog = { open: true, itemId: item.id };
+    this._render();
+  }
+
+  _closeInfoDialog() {
+    this._infoDialog = { open: false, itemId: "" };
+    this._render();
+  }
+
+  async _deleteItem(item) {
+    if (!this._hass || !item?.id) return;
+    try {
+      await this._hass.callWS({
+        type: "reolink_feed/delete_item",
+        item_id: item.id,
+      });
+      this._items = this._items.filter((existing) => existing.id !== item.id);
+      this._applyFilters();
+      this._closeInfoDialog();
+      this._showToast("Detection deleted");
+    } catch (err) {
+      this._showToast(`Delete failed: ${err?.message || err}`);
+    }
+  }
+
   _showToast(message) {
     const event = new Event("hass-notification", {
       bubbles: true,
@@ -260,6 +288,19 @@ class ReolinkFeedCard extends HTMLElement {
     if (h > 0) return `${h}h ${m}m ${s}s`;
     if (m > 0) return `${m}m ${s}s`;
     return `${s}s`;
+  }
+
+  _formatDateTime(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleString([], {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
   }
 
   _labelIcon(label) {
@@ -330,12 +371,11 @@ class ReolinkFeedCard extends HTMLElement {
             </div>
             <div class="right-col">
               ${this._labelIcon(item.label)}
-              <button class="refresh${resolving}" aria-label="Refresh recording link" title="Refresh recording link">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
-                  <polyline points="21 3 21 9 15 9"></polyline>
-                </svg>
-              </button>
+              <div class="item-actions">
+                <button class="info" aria-label="Show detection info" title="Show detection info">
+                  <ha-icon icon="mdi:information-outline"></ha-icon>
+                </button>
+              </div>
             </div>
           </li>
         `;
@@ -373,6 +413,49 @@ class ReolinkFeedCard extends HTMLElement {
       `
       : "";
 
+    const infoItem = this._infoDialog.open
+      ? this._items.find((item) => item.id === this._infoDialog.itemId) || null
+      : null;
+    const infoDialogHtml =
+      this._infoDialog.open && infoItem
+        ? `
+      <ha-dialog open scrimClickAction="" escapeKeyAction="">
+        <div class="info-head">
+          <span>Detection info</span>
+          <button class="close-info-top" type="button" aria-label="Close info dialog">✕</button>
+        </div>
+        <div class="info-body">
+          <div><strong>Camera:</strong> ${infoItem.camera_name || "-"}</div>
+          <div><strong>Timestamp:</strong> ${this._formatDateTime(infoItem.start_ts) || "-"}</div>
+          <div><strong>Duration:</strong> ${this._formatDuration(infoItem.duration_s)}</div>
+          <div><strong>Detection:</strong> ${infoItem.label || "-"}</div>
+          <div class="info-links">
+            <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">History</a>
+            <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">Logbook</a>
+          </div>
+          ${
+            infoItem.snapshot_url
+              ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || "Snapshot"}" loading="lazy" />`
+              : `<div class="placeholder">No snapshot</div>`
+          }
+          <div>
+            <a href="/media-browser/browser/${encodeURIComponent(this._mediaBrowserTarget(infoItem, infoItem?.recording?.media_content_id || ""))}" target="_blank" rel="noopener">Open media folder</a>
+          </div>
+        </div>
+        <div class="info-actions">
+          <button class="reset-info${this._resolvingIds.has(infoItem.id) ? " resolving" : ""}" type="button">
+            <ha-icon icon="mdi:arrow-u-left-top"></ha-icon>
+            <span>Reset</span>
+          </button>
+          <button class="delete-info" type="button">
+            <ha-icon icon="mdi:trash-can-outline"></ha-icon>
+            <span>Delete</span>
+          </button>
+        </div>
+      </ha-dialog>
+      `
+        : "";
+
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
@@ -403,6 +486,7 @@ class ReolinkFeedCard extends HTMLElement {
         .line1 { display: flex; gap: 8px; align-items: center; font-size: 13px; }
         .camera { font-weight: 600; }
         .right-col { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; min-height: 52px; }
+        .item-actions { display: flex; gap: 6px; align-items: center; }
         .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
         .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; }
         .line2, .line3 { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
@@ -410,10 +494,9 @@ class ReolinkFeedCard extends HTMLElement {
         button.recording-icon { border: 0; background: transparent; padding: 0; margin: 0; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
         button.recording-icon ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color); opacity: 0.6; }
         button.recording-icon:hover ha-icon { opacity: 0.85; }
-        button.refresh { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
-        button.refresh:hover { background: var(--secondary-background-color); }
-        button.refresh svg { width: 14px; height: 14px; }
-        button.refresh.resolving svg { animation: spin 1s linear infinite; }
+        button.info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+        button.info:hover { background: var(--secondary-background-color); }
+        button.info ha-icon { --mdc-icon-size: 14px; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .empty { color: var(--secondary-text-color); font-size: 13px; padding: 8px 2px; }
         .error { color: var(--error-color); font-size: 12px; white-space: pre-wrap; }
@@ -426,6 +509,23 @@ class ReolinkFeedCard extends HTMLElement {
         .modal video { width: 100%; max-height: 72vh; background: #000; }
         .modal img { width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
         .fallback { color: #9cc3ff; font-size: 12px; }
+
+        ha-dialog { --dialog-content-padding: 0; }
+        .info-head { padding: 14px 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--divider-color); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+        .info-body { padding: 12px 16px; display: grid; gap: 10px; color: var(--primary-text-color); }
+        .info-links { display: flex; gap: 12px; }
+        .info-links a, .info-body a { color: var(--primary-color); text-decoration: none; }
+        .info-links a:hover, .info-body a:hover { text-decoration: underline; }
+        .info-snapshot { width: 100%; max-height: 280px; object-fit: cover; border-radius: 8px; border: 1px solid var(--divider-color); }
+        .info-actions { padding: 0 16px 14px 16px; display: flex; justify-content: space-between; gap: 10px; }
+        .close-info-top { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+        .close-info-top:hover { background: var(--secondary-background-color); }
+        .reset-info, .delete-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 34px; padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+        .reset-info:hover { background: var(--secondary-background-color); }
+        .reset-info.resolving { opacity: 0.7; }
+        .delete-info { border-color: #c03b3b; color: #d64545; }
+        .delete-info:hover { background: rgba(214, 69, 69, 0.1); }
+        .reset-info ha-icon, .delete-info ha-icon { --mdc-icon-size: 16px; }
       </style>
       <ha-card>
         <div class="topbar">
@@ -445,6 +545,7 @@ class ReolinkFeedCard extends HTMLElement {
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">No detections in range.</div>`}
       </ha-card>
       ${modalHtml}
+      ${infoDialogHtml}
     `;
 
     this.shadowRoot.querySelectorAll("li.item").forEach((el) => {
@@ -453,8 +554,8 @@ class ReolinkFeedCard extends HTMLElement {
       if (!item) return;
 
       const thumb = el.querySelector("button.thumb");
-      const refresh = el.querySelector("button.refresh");
       const rec = el.querySelector("button.recording-icon");
+      const info = el.querySelector("button.info");
 
       if (thumb) {
         thumb.addEventListener("click", (ev) => {
@@ -462,16 +563,16 @@ class ReolinkFeedCard extends HTMLElement {
           this._openFromThumbnail(item);
         });
       }
-      if (refresh) {
-        refresh.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          this._refreshRecording(item, true);
-        });
-      }
       if (rec) {
         rec.addEventListener("click", (ev) => {
           ev.preventDefault();
           this._openMediaBrowserForRecording(item);
+        });
+      }
+      if (info) {
+        info.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          this._openInfoDialog(item);
         });
       }
     });
@@ -509,6 +610,23 @@ class ReolinkFeedCard extends HTMLElement {
           this._closeModal();
         }
       });
+    });
+    const closeInfoTopButton = this.shadowRoot.querySelector("button.close-info-top");
+    closeInfoTopButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      this._closeInfoDialog();
+    });
+    const resetInfoButton = this.shadowRoot.querySelector("button.reset-info");
+    resetInfoButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (!infoItem) return;
+      this._refreshRecording(infoItem, true);
+    });
+    const deleteInfoButton = this.shadowRoot.querySelector("button.delete-info");
+    deleteInfoButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (!infoItem) return;
+      this._deleteItem(infoItem);
     });
   }
 }
