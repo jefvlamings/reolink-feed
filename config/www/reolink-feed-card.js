@@ -162,7 +162,12 @@ class ReolinkFeedCard extends HTMLElement {
 
   _formatTime(ts) {
     if (!ts) return "";
-    return new Date(ts).toLocaleString();
+    return new Date(ts).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
   }
 
   _formatDuration(totalSeconds) {
@@ -176,12 +181,35 @@ class ReolinkFeedCard extends HTMLElement {
     return `${s}s`;
   }
 
+  _labelIcon(label) {
+    if (label === "animal") {
+      return `
+        <span class="label-icon animal" title="Animal" aria-label="Animal">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="7.5" cy="8" r="2"></circle>
+            <circle cx="16.5" cy="8" r="2"></circle>
+            <circle cx="5.5" cy="13" r="2"></circle>
+            <circle cx="18.5" cy="13" r="2"></circle>
+            <ellipse cx="12" cy="16.5" rx="4.5" ry="3.2"></ellipse>
+          </svg>
+        </span>
+      `;
+    }
+    return `
+      <span class="label-icon person" title="Person" aria-label="Person">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="7" r="3"></circle>
+          <path d="M6.5 18c0-3 2.4-5 5.5-5s5.5 2 5.5 5"></path>
+        </svg>
+      </span>
+    `;
+  }
+
   _render() {
     if (!this.shadowRoot || !this._config) {
       return;
     }
 
-    const title = this._config.title || "Reolink Feed";
     const listHtml = this._filteredItems
       .map((item) => {
         const status = item.recording?.status || "pending";
@@ -197,13 +225,15 @@ class ReolinkFeedCard extends HTMLElement {
             <div class="meta">
               <div class="line1">
                 <span class="camera">${item.camera_name}</span>
-                <span class="label ${item.label}">${item.label}</span>
               </div>
-              <div class="line2">${this._formatTime(item.start_ts)}</div>
+              <div class="line2">At: ${this._formatTime(item.start_ts)}</div>
               <div class="line3">
-                <span>${this._formatDuration(item.duration_s)}</span>
+                <span>Duration: ${this._formatDuration(item.duration_s)}</span>
                 <span class="status ${status}">${statusText}</span>
               </div>
+            </div>
+            <div class="top-right">
+              ${this._labelIcon(item.label)}
             </div>
             <button class="refresh${resolving}" aria-label="Refresh recording link" title="Refresh recording link">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -237,18 +267,18 @@ class ReolinkFeedCard extends HTMLElement {
       <style>
         :host { display: block; }
         ha-card { padding: 10px; }
-        .head { font-weight: 600; margin-bottom: 8px; }
-        .state { color: var(--secondary-text-color); font-size: 12px; margin-bottom: 8px; }
-        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-        .item { display: grid; grid-template-columns: 110px 1fr auto; gap: 10px; align-items: center; border: 1px solid var(--divider-color); border-radius: 10px; padding: 8px; }
+        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; overflow: hidden; border-radius: 10px; }
+        .item { display: grid; grid-template-columns: 110px 1fr auto auto; gap: 10px; align-items: center; padding: 8px; }
+        .item:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+        .item:nth-child(even) { background: rgba(255, 255, 255, 0.06); }
         .thumb { width: 110px; height: 62px; overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
         .line1 { display: flex; gap: 8px; align-items: center; font-size: 13px; }
         .camera { font-weight: 600; }
-        .label { text-transform: uppercase; font-size: 10px; padding: 2px 6px; border-radius: 999px; letter-spacing: 0.04em; }
-        .label.person { background: #1d3557; color: #fff; }
-        .label.animal { background: #2a9d8f; color: #fff; }
+        .top-right { display: flex; align-self: flex-start; justify-self: end; margin-top: 1px; }
+        .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
+        .label-icon svg { width: 16px; height: 16px; fill: none; stroke: var(--secondary-text-color); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
         .line2, .line3 { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
         .line3 { display: flex; justify-content: space-between; }
         .status { padding: 1px 6px; border-radius: 999px; border: 1px solid var(--divider-color); text-transform: lowercase; }
@@ -272,8 +302,6 @@ class ReolinkFeedCard extends HTMLElement {
         .fallback { color: #9cc3ff; font-size: 12px; }
       </style>
       <ha-card>
-        <div class="head">${title}</div>
-        <div class="state">${this._loading ? "loading..." : `${this._filteredItems.length} items`}</div>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>` : `<div class="empty">No detections in range.</div>`}
       </ha-card>
