@@ -67,6 +67,7 @@ Card file:
 Add it as a Lovelace resource:
 - URL: `/reolink_feed/reolink-feed-card.js`
 - Type: `module`
+- In storage mode dashboards, the integration auto-adds this resource.
 
 For local development with `/local/reolink-feed-card.js`, run:
 
@@ -126,8 +127,9 @@ Install flow in HACS:
 
 1. Add this GitHub repository as custom repository type `Integration`.
 2. Install `Reolink Feed`.
-3. Add Lovelace resource URL `/reolink_feed/reolink-feed-card.js` with type `module`.
-4. Add card `type: custom:reolink-feed-card`.
+3. Restart Home Assistant and refresh the browser.
+4. If your dashboard is YAML mode, add Lovelace resource URL `/reolink_feed/reolink-feed-card.js` with type `module`.
+5. Add card `type: custom:reolink-feed-card`.
 
 ## Testing
 

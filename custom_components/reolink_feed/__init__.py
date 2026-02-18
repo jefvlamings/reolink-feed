@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 
 import voluptuous as vol
 
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.lovelace.const import (
+    CONF_RESOURCE_TYPE_WS,
+    CONF_URL,
+    LOVELACE_DATA,
+)
+from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ENTITY_ID
+from homeassistant.const import CONF_ENTITY_ID, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
 from .const import CARD_FILENAME, CARD_URL_PATH, DOMAIN
 from .feed import ReolinkFeedManager
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,6 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
     await manager.async_start()
     entry.runtime_data = ReolinkFeedData(manager=manager)
     await _async_register_card_resource(hass)
+    await _async_ensure_lovelace_card_resource(hass)
     _async_register_ws_commands(hass)
     _async_register_services(hass)
     return True
@@ -63,6 +73,40 @@ async def _async_register_card_resource(hass: HomeAssistant) -> None:
         [StaticPathConfig(CARD_URL_PATH, str(card_file), cache_headers=False)]
     )
     hass.data[f"{DOMAIN}_card_registered"] = True
+
+
+async def _async_ensure_lovelace_card_resource(hass: HomeAssistant) -> None:
+    """Ensure Lovelace storage resources include the bundled card."""
+    if not await _async_try_add_lovelace_card_resource(hass):
+        @callback
+        def _on_started(_event) -> None:
+            hass.async_create_task(_async_try_add_lovelace_card_resource(hass))
+
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+
+
+async def _async_try_add_lovelace_card_resource(hass: HomeAssistant) -> bool:
+    """Add the card resource in Lovelace storage mode if needed."""
+    lovelace_data = hass.data.get(LOVELACE_DATA)
+    if lovelace_data is None:
+        return False
+
+    resources = lovelace_data.resources
+    if not isinstance(resources, ResourceStorageCollection):
+        _LOGGER.debug("Lovelace is not in storage resource mode; skipping card resource auto-add")
+        return True
+
+    await resources.async_get_info()
+    for item in resources.async_items() or []:
+        url = str(item.get(CONF_URL, ""))
+        if url.split("?", 1)[0] == CARD_URL_PATH:
+            return True
+
+    await resources.async_create_item(
+        {CONF_RESOURCE_TYPE_WS: "module", CONF_URL: CARD_URL_PATH}
+    )
+    _LOGGER.info("Added Lovelace resource for Reolink Feed card: %s", CARD_URL_PATH)
+    return True
 
 
 @callback
