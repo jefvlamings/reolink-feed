@@ -47,3 +47,6 @@ fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`);
 NODE
 
 echo "Done. Reload Home Assistant UI."
+echo "Restarting Home Assistant container..."
+docker compose restart homeassistant
+echo "Done. Home Assistant container restarted."
