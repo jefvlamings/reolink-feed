@@ -21,11 +21,24 @@ class ReolinkFeedCard extends HTMLElement {
       labels: ["person", "animal"],
       cameras: [],
       refresh_seconds: 20,
+      full_width: false,
       ...config,
     };
+    this._applyLayoutConfig();
     this._scheduleRefresh();
     this._render();
     this._loadItems();
+  }
+
+  static async getConfigElement() {
+    return document.createElement("reolink-feed-card-editor");
+  }
+
+  static getStubConfig() {
+    return {
+      type: "custom:reolink-feed-card",
+      full_width: false,
+    };
   }
 
   set hass(hass) {
@@ -46,6 +59,14 @@ class ReolinkFeedCard extends HTMLElement {
 
   getCardSize() {
     return 6;
+  }
+
+  _applyLayoutConfig() {
+    if (this._config?.full_width) {
+      this.style.gridColumn = "1 / -1";
+    } else {
+      this.style.gridColumn = "";
+    }
   }
 
   _scheduleRefresh() {
@@ -333,7 +354,7 @@ class ReolinkFeedCard extends HTMLElement {
       <style>
         :host { display: block; }
         ha-card { padding: 10px; }
-        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
         .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
         .thumb { grid-column: 1 / span 2; position: relative; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -367,9 +388,6 @@ class ReolinkFeedCard extends HTMLElement {
         .modal video { width: 100%; max-height: 72vh; background: #000; }
         .modal img { width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
         .fallback { color: #9cc3ff; font-size: 12px; }
-        @media (max-width: 399px) {
-          ul { grid-template-columns: 1fr; }
-        }
       </style>
       <ha-card>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
@@ -427,3 +445,51 @@ window.customCards.push({
   name: "Reolink Feed Card",
   description: "Timeline of Reolink person/animal detections",
 });
+
+class ReolinkFeedCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = {};
+    this.attachShadow({ mode: "open" });
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  _onToggle(ev) {
+    const checked = ev.target.checked;
+    const next = { ...this._config, full_width: checked };
+    this._config = next;
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: next },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    const checked = Boolean(this._config?.full_width);
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        .row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+        label { color: var(--primary-text-color); font-size: 14px; }
+      </style>
+      <div class="row">
+        <input id="full_width" type="checkbox" ${checked ? "checked" : ""} />
+        <label for="full_width">Full width in section</label>
+      </div>
+    `;
+    const checkbox = this.shadowRoot.querySelector("#full_width");
+    checkbox?.addEventListener("change", (ev) => this._onToggle(ev));
+  }
+}
+
+if (!customElements.get("reolink-feed-card-editor")) {
+  customElements.define("reolink-feed-card-editor", ReolinkFeedCardEditor);
+}
