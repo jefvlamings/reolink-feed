@@ -1,0 +1,12 @@
+# Home Assistant runtime/state artifacts
+config/.ha_run.lock
+config/.storage/
+config/home-assistant.log
+config/home-assistant.log.*
+config/home-assistant.log.fault
+config/home-assistant_v2.db
+config/home-assistant_v2.db-*
+
+# Python cache
+**/__pycache__/
+*.py[cod]
