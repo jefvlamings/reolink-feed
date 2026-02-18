@@ -24,8 +24,10 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .const import (
+    CLEANUP_INTERVAL_SECONDS,
     MAX_ITEMS,
     MERGE_WINDOW_SECONDS,
+    RETENTION_HOURS,
     RECORDING_DEFAULT_CLIP_DURATION_SECONDS,
     RECORDING_RETRY_DELAYS_SECONDS,
     RECORDING_WINDOW_END_PAD_SECONDS,
@@ -58,15 +60,19 @@ class ReolinkFeedManager:
         self._unsub_recording_timers: dict[str, list[Callable[[], None]]] = {}
         self._unsub_state_changed: Callable[[], None] | None = None
         self._unsub_delayed_save: Callable[[], None] | None = None
+        self._unsub_cleanup_timer: Callable[[], None] | None = None
 
     async def async_start(self) -> None:
         """Load initial state and begin listening."""
         self._items = await self._store.async_load()
         changed = await self._async_migrate_snapshot_paths()
+        if await self.async_prune_expired_items():
+            changed = True
         self._rebuild_indexes()
         self._unsub_state_changed = self.hass.bus.async_listen(
             EVENT_STATE_CHANGED, self._async_handle_state_changed
         )
+        self._schedule_cleanup()
         if changed:
             await self._store.async_save(self._items)
 
@@ -78,6 +84,9 @@ class ReolinkFeedManager:
         if self._unsub_delayed_save:
             self._unsub_delayed_save()
             self._unsub_delayed_save = None
+        if self._unsub_cleanup_timer:
+            self._unsub_cleanup_timer()
+            self._unsub_cleanup_timer = None
         for unsub in self._unsub_snapshot_timers.values():
             unsub()
         self._unsub_snapshot_timers.clear()
@@ -97,6 +106,54 @@ class ReolinkFeedManager:
         if changed:
             await self._store.async_save(self._items)
         return changed
+
+    async def async_prune_expired_items(self) -> int:
+        """Drop items older than retention window and remove their snapshots."""
+        cutoff = dt_util.utcnow() - timedelta(hours=RETENTION_HOURS)
+        kept: list[DetectionItem] = []
+        removed: list[DetectionItem] = []
+        for item in self._items:
+            if item.start_dt.astimezone(dt_util.UTC) < cutoff:
+                removed.append(item)
+            else:
+                kept.append(item)
+
+        if not removed:
+            return 0
+
+        removed_ids = {item.id for item in removed}
+        for item_id in removed_ids:
+            self._cancel_recording_resolution(item_id)
+            snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
+            if snapshot_unsub:
+                snapshot_unsub()
+
+        await self._async_delete_snapshots_for_items(removed)
+        self._items = kept
+        self._rebuild_indexes()
+        await self._store.async_save(self._items)
+        _LOGGER.info("Pruned %s expired reolink feed items", len(removed))
+        return len(removed)
+
+    def _schedule_cleanup(self) -> None:
+        if self._unsub_cleanup_timer is not None:
+            self._unsub_cleanup_timer()
+            self._unsub_cleanup_timer = None
+
+        @callback
+        def _cleanup_callback(_now: datetime) -> None:
+            self._unsub_cleanup_timer = None
+            self.hass.async_create_task(self._async_run_scheduled_cleanup())
+
+        self._unsub_cleanup_timer = async_call_later(
+            self.hass, float(CLEANUP_INTERVAL_SECONDS), _cleanup_callback
+        )
+
+    async def _async_run_scheduled_cleanup(self) -> None:
+        try:
+            await self.async_prune_expired_items()
+        finally:
+            self._schedule_cleanup()
 
     async def async_rebuild_from_history(
         self, *, since_hours: int = 24, per_entity_changes: int = 400
@@ -517,6 +574,15 @@ class ReolinkFeedManager:
 
         return changed
 
+    async def _async_delete_snapshots_for_items(self, items: list[DetectionItem]) -> None:
+        paths: set[Path] = set()
+        for item in items:
+            for path in _snapshot_paths_for_item(self.hass, self._www_root, item):
+                paths.add(path)
+        if not paths:
+            return
+        await self.hass.async_add_executor_job(_delete_files_and_empty_parents, sorted(paths))
+
     def _resolve_snapshot_camera(self, source_entity_id: str) -> str | None:
         if source_entity_id in self._snapshot_camera_by_sensor:
             return self._snapshot_camera_by_sensor[source_entity_id]
@@ -819,6 +885,49 @@ def _write_dummy_svg_file(path: Path, camera_name: str, label: str, start_ts: st
 def _copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+
+
+def _delete_files_and_empty_parents(paths: list[Path]) -> None:
+    for path in paths:
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        _delete_empty_parents(path.parent)
+
+
+def _delete_empty_parents(start_dir: Path) -> None:
+    current = start_dir
+    for _ in range(4):
+        if not current.exists() or not current.is_dir():
+            return
+        if current.name in {"www", "media"}:
+            return
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        if current.name == "reolink_feed":
+            return
+        current = current.parent
+
+
+def _snapshot_paths_for_item(hass: HomeAssistant, www_root: Path, item: DetectionItem) -> list[Path]:
+    snapshot_url = item.snapshot_url
+    if not snapshot_url:
+        return []
+
+    paths: list[Path] = []
+    if snapshot_url.startswith("/local/reolink_feed/"):
+        relative = snapshot_url.removeprefix("/local/")
+        paths.append(www_root / relative)
+    elif snapshot_url.startswith("/media/local/reolink_feed/"):
+        relative = snapshot_url.removeprefix("/media/local/reolink_feed/")
+        for root in _candidate_legacy_snapshot_roots(hass):
+            paths.append(root / relative)
+    return paths
 
 
 def _candidate_legacy_snapshot_roots(hass: HomeAssistant) -> list[Path]:
