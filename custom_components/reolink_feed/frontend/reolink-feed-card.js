@@ -43,8 +43,6 @@ class ReolinkFeedCard extends HTMLElement {
     this._hass = hass;
     if (!this._items.length && !this._loading) {
       this._loadItems();
-    } else {
-      this._render();
     }
   }
 
@@ -409,10 +407,10 @@ class ReolinkFeedCard extends HTMLElement {
         button.page-nav:disabled { opacity: 0.6; cursor: default; }
         ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
         .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
-        .thumb { grid-column: 1 / span 2; position: relative; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
+        .thumb { grid-column: 1 / span 2; position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; line-height: 0; appearance: none; -webkit-appearance: none; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; }
-        .thumb:hover .play-overlay { opacity: 1; }
+        .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; will-change: opacity; }
+        .thumb:hover .play-overlay, .thumb:focus-visible .play-overlay { opacity: 1; }
         .play-overlay svg { width: 22px; height: 22px; fill: #fff; }
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
         .line1 { display: flex; gap: 8px; align-items: center; font-size: 13px; }
