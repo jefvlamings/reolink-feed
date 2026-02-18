@@ -25,9 +25,7 @@ Architecture is documented in `PLANS.md`.
 
 - Docker + Docker Compose
 - Reolink integration configured in Home Assistant
-- Reolink AI binary sensors available (Dutch names currently matched):
-  - `binary_sensor.*_persoon`
-  - `binary_sensor.*_dier`
+- Reolink AI binary sensors available (`person` / `animal`, language-agnostic mapping via entity registry metadata)
 
 ## Run Locally
 
@@ -96,16 +94,21 @@ refresh_seconds: 20
 
 Implemented:
 - custom integration scaffold with config flow
-- event listener for Reolink AI binary sensors (`_persoon`, `_dier`)
+- event listener for Reolink AI binary sensors (language-agnostic label mapping)
 - burst merge logic (`merge_window_s = 20`)
 - persistent item storage via HA `Store`
-- WebSocket endpoint:
+- snapshot capture + snapshot URL persistence
+- recording resolver with retries + clip linking
+- WebSocket endpoints:
   - `reolink_feed/list`
+  - `reolink_feed/resolve_recording`
+- mock detection service: `reolink_feed.mock_detection`
+- custom Lovelace card UI (`config/www/reolink-feed-card.js`)
 
 Not yet implemented:
-- snapshot capture and media file writing
-- recording link resolution (`reolink_feed/resolve_recording`)
-- Lovelace timeline card frontend
+- HACS packaging/publishing (integration + dashboard plugin repos)
+- automated tests for backend logic and resolver matching
+- production hardening for all Reolink/NVR edge cases
 
 ## Testing
 
@@ -134,7 +137,7 @@ create_dummy_snapshot: true
 
 This creates a synthetic timeline item and writes a dummy snapshot file to:
 
-- `config/media/reolink_feed/<camera_slug>/<YYYY-MM-DD>/<HHMMSS>_person_mock.svg`
+- `config/www/reolink_feed/<camera_slug>/<YYYY-MM-DD>/<HHMMSS>_person_mock.svg`
 
 ### Syntax sanity check
 
@@ -179,10 +182,8 @@ Response:
 
 ## TODO Roadmap
 
-1. Snapshot capture pipeline
-2. Camera entity mapping from detection sensor to low-res snapshot camera
-3. Recording resolver with retry/backoff window
-4. `reolink_feed/resolve_recording` WebSocket command
-5. Custom Lovelace timeline card
-6. HACS packaging + release metadata
-7. Automated tests for merge logic and resolver matching
+1. HACS packaging + release metadata (integration + card)
+2. CI validation (`hassfest`, HACS checks)
+3. Automated tests for merge logic, snapshot mapping, and resolver matching
+4. Frontend UX polish and accessibility pass
+5. Optional fallback linking to continuous recordings (v1.1)
