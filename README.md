@@ -61,6 +61,37 @@ On first startup, complete Home Assistant onboarding if needed. Then add the cus
 2. `Add Integration`
 3. Search for `Reolink Feed`
 
+## Lovelace Card (start)
+
+Card file:
+- `config/www/reolink-feed-card.js`
+
+Add it as a Lovelace resource:
+- URL: `/local/reolink-feed-card.js`
+- Type: `module`
+
+After editing card JS, bump the resource version to force reload:
+
+```bash
+./scripts/bump-card-resource-version.sh
+```
+
+Then add a manual card:
+
+```yaml
+type: custom:reolink-feed-card
+title: Reolink Feed
+since_hours: 24
+limit: 100
+labels:
+  - person
+  - animal
+cameras:
+  - Deurbel
+  - Tuinhuis
+refresh_seconds: 20
+```
+
 ## Current Status (V1 in progress)
 
 Implemented:
