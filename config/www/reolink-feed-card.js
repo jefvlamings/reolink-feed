@@ -264,12 +264,10 @@ class ReolinkFeedCard extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
-        ha-card { padding: 0; }
-        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; overflow: hidden; border-radius: 10px; }
-        .item { display: grid; grid-template-columns: 110px 1fr auto; gap: 10px; align-items: stretch; padding: 8px; }
-        .item:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
-        .item:nth-child(even) { background: rgba(255, 255, 255, 0.06); }
-        .thumb { position: relative; width: 110px; height: 62px; overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
+        ha-card { padding: 10px; }
+        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 10px; align-items: stretch; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); }
+        .thumb { grid-column: 1 / span 2; position: relative; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 8px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; }
         .thumb:hover .play-overlay { opacity: 1; }
@@ -277,7 +275,7 @@ class ReolinkFeedCard extends HTMLElement {
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
         .line1 { display: flex; gap: 8px; align-items: center; font-size: 13px; }
         .camera { font-weight: 600; }
-        .right-col { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; min-height: 62px; }
+        .right-col { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; min-height: 52px; }
         .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
         .label-icon ha-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
         .line2, .line3 { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
@@ -301,6 +299,9 @@ class ReolinkFeedCard extends HTMLElement {
         .modal-body { padding: 10px; display: grid; gap: 8px; }
         .modal video { width: 100%; max-height: 72vh; background: #000; }
         .fallback { color: #9cc3ff; font-size: 12px; }
+        @media (max-width: 399px) {
+          ul { grid-template-columns: 1fr; }
+        }
       </style>
       <ha-card>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
