@@ -179,7 +179,7 @@ Expose minimal WS commands from the custom integration:
 - response: `{ "items": [ ... ] }` sorted newest-first
 
 2) `reolink_feed/resolve_recording`
-- request: `{ "id": "<item_id>" }`
+- request: `{ "item_id": "<item_id>" }`
 - response: `{ "status": "linked|pending|not_found", "media_content_id": "media-source://…" }`
 
 Frontend behavior:
@@ -204,3 +204,39 @@ Frontend behavior:
 - Frontend: custom Lovelace card (HACS-compatible later)
 - Persistence: HA `Store` in `.storage/` + images under `/media/reolink_feed/…`
 
+---
+
+## Distribution Plan (HACS Custom Repos)
+Goal: make installation as close to one-click as possible by linking users directly to GitHub repos via HACS custom repositories.
+
+### Packaging strategy
+Use two repos (or one mono-repo with separate release artifacts, but two repos is simpler for users):
+1) **Integration repo** (HACS type: `Integration`)
+   - contains `custom_components/reolink_feed`
+2) **Card repo** (HACS type: `Dashboard`)
+   - contains built card asset in `dist/reolink-feed-card.js`
+
+### Required metadata/files
+Integration repo:
+- root `hacs.json`
+- `custom_components/reolink_feed/manifest.json` with real `documentation`, `issue_tracker`, `codeowners`, and semantic `version`
+- release tags (`vX.Y.Z`)
+
+Card repo:
+- root `hacs.json` (dashboard/plugin category)
+- `dist/reolink-feed-card.js`
+- README with card config snippet
+- release tags (`vX.Y.Z`)
+
+### CI/quality gates
+- add `hassfest` workflow for integration repo
+- add HACS validation workflow for both repos
+
+### User install flow (custom repo)
+1) Open HACS -> Custom repositories
+2) Add integration repo as type **Integration**
+3) Add card repo as type **Dashboard**
+4) Install both, then add card resource and card YAML
+
+### Optional polish
+- add My Home Assistant badges in README for faster install/navigation
