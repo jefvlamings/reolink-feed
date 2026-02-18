@@ -1,10 +1,13 @@
 {
   "domain": "reolink_feed",
   "name": "Reolink Feed",
-  "codeowners": [],
+  "codeowners": [
+    "@jefvlamings"
+  ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/example/reolink-feed",
+  "documentation": "https://github.com/jefvlamings/reolink-feed",
+  "issue_tracker": "https://github.com/jefvlamings/reolink-feed/issues",
   "integration_type": "service",
   "iot_class": "local_push",
   "requirements": [],

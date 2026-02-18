@@ -206,37 +206,32 @@ Frontend behavior:
 
 ---
 
-## Distribution Plan (HACS Custom Repos)
+## Distribution Plan (HACS Integration Repo)
 Goal: make installation as close to one-click as possible by linking users directly to GitHub repos via HACS custom repositories.
 
 ### Packaging strategy
-Use two repos (or one mono-repo with separate release artifacts, but two repos is simpler for users):
+Use one repo as HACS type `Integration`:
 1) **Integration repo** (HACS type: `Integration`)
-   - contains `custom_components/reolink_feed`
-2) **Card repo** (HACS type: `Dashboard`)
-   - contains built card asset in `dist/reolink-feed-card.js`
+   - root `hacs.json`
+   - `custom_components/reolink_feed`
+   - bundled card JS inside integration (served by integration static path)
 
 ### Required metadata/files
 Integration repo:
 - root `hacs.json`
 - `custom_components/reolink_feed/manifest.json` with real `documentation`, `issue_tracker`, `codeowners`, and semantic `version`
-- release tags (`vX.Y.Z`)
-
-Card repo:
-- root `hacs.json` (dashboard/plugin category)
-- `dist/reolink-feed-card.js`
-- README with card config snippet
+- bundled card asset at `custom_components/reolink_feed/frontend/reolink-feed-card.js`
 - release tags (`vX.Y.Z`)
 
 ### CI/quality gates
 - add `hassfest` workflow for integration repo
-- add HACS validation workflow for both repos
+- add HACS validation workflow for the integration repo
 
 ### User install flow (custom repo)
 1) Open HACS -> Custom repositories
-2) Add integration repo as type **Integration**
-3) Add card repo as type **Dashboard**
-4) Install both, then add card resource and card YAML
+2) Add this repo as type **Integration**
+3) Install integration
+4) Add card resource URL served by integration (for example `/reolink_feed/reolink-feed-card.js`) and add card YAML
 
 ### Optional polish
 - add My Home Assistant badges in README for faster install/navigation

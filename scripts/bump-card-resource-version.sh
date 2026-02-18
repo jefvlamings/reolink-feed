@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SOURCE_FILE="${3:-custom_components/reolink_feed/frontend/reolink-feed-card.js}"
+TARGET_FILE="${4:-config/www/reolink-feed-card.js}"
 FILE="${1:-config/.storage/lovelace_resources}"
 CARD_PATH="${2:-/local/reolink-feed-card.js}"
+
+if [ ! -f "$SOURCE_FILE" ]; then
+  echo "Card source not found: $SOURCE_FILE" >&2
+  exit 1
+fi
 
 if [ ! -f "$FILE" ]; then
   echo "File not found: $FILE" >&2
   exit 1
 fi
+
+mkdir -p "$(dirname "$TARGET_FILE")"
+cp "$SOURCE_FILE" "$TARGET_FILE"
+echo "Synced card: $SOURCE_FILE -> $TARGET_FILE"
 
 node - "$FILE" "$CARD_PATH" <<'NODE'
 const fs = require("fs");

@@ -5,6 +5,7 @@
   - `__init__.py`: setup/unload + WebSocket command registration.
   - `feed.py`: event listener and detection merge logic.
   - `models.py`, `storage.py`, `const.py`: data model, persistence, constants.
+  - `frontend/reolink-feed-card.js`: bundled Lovelace card served by the integration.
   - `manifest.json`, `strings.json`, `config_flow.py`: HA integration metadata/UI.
 - `config/`: Home Assistant runtime config mounted into the container (`/config`).
 - `docker-compose.yml`: local development runtime for Home Assistant.
@@ -16,10 +17,11 @@
 - `docker compose restart homeassistant`: reload after backend code changes.
 - `docker compose logs -f homeassistant`: follow runtime logs and integration errors.
 - `./scripts/bump-card-resource-version.sh`: bump Lovelace resource `?v=` for `reolink-feed-card.js` after card changes.
+  - also syncs `custom_components/reolink_feed/frontend/reolink-feed-card.js` to `config/www/reolink-feed-card.js` for local dev
 - `python3 - <<'PY' ... ast.parse(...)`: quick syntax sanity check for `custom_components/reolink_feed/*.py`.
 
 Required after changes:
-- After any `config/www/reolink-feed-card.js` edit, always run `./scripts/bump-card-resource-version.sh`.
+- After any `custom_components/reolink_feed/frontend/reolink-feed-card.js` edit, always run `./scripts/bump-card-resource-version.sh`.
 - After integration or card changes, always run `docker compose restart homeassistant`.
 
 Example:

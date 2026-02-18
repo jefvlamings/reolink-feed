@@ -10,3 +10,6 @@ config/home-assistant_v2.db-*
 # Python cache
 **/__pycache__/
 *.py[cod]
+
+# Generated packaging output
+release/

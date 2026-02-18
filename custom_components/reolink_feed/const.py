@@ -5,6 +5,8 @@ from __future__ import annotations
 DOMAIN = "reolink_feed"
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.items"
+CARD_FILENAME = "reolink-feed-card.js"
+CARD_URL_PATH = f"/{DOMAIN}/{CARD_FILENAME}"
 MERGE_WINDOW_SECONDS = 20
 SNAPSHOT_DELAY_SECONDS = 1.0
 RECORDING_RETRY_DELAYS_SECONDS: tuple[int, ...] = (10, 30, 60, 120, 300)

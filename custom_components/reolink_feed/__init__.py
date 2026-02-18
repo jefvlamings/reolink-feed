@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import voluptuous as vol
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ENTITY_ID
@@ -13,7 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import CARD_FILENAME, CARD_URL_PATH, DOMAIN
 from .feed import ReolinkFeedManager
 
 
@@ -37,6 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
     manager = ReolinkFeedManager(hass)
     await manager.async_start()
     entry.runtime_data = ReolinkFeedData(manager=manager)
+    await _async_register_card_resource(hass)
     _async_register_ws_commands(hass)
     _async_register_services(hass)
     return True
@@ -48,6 +51,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry)
     if not hass.config_entries.async_entries(DOMAIN):
         hass.services.async_remove(DOMAIN, "mock_detection")
     return True
+
+
+async def _async_register_card_resource(hass: HomeAssistant) -> None:
+    """Expose the bundled Lovelace card JavaScript as a static URL."""
+    if hass.data.get(f"{DOMAIN}_card_registered"):
+        return
+
+    card_file = Path(__file__).parent / "frontend" / CARD_FILENAME
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(CARD_URL_PATH, str(card_file), cache_headers=False)]
+    )
+    hass.data[f"{DOMAIN}_card_registered"] = True
 
 
 @callback

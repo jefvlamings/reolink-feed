@@ -62,17 +62,19 @@ On first startup, complete Home Assistant onboarding if needed. Then add the cus
 ## Lovelace Card (start)
 
 Card file:
-- `config/www/reolink-feed-card.js`
+- `custom_components/reolink_feed/frontend/reolink-feed-card.js` (source of truth)
 
 Add it as a Lovelace resource:
-- URL: `/local/reolink-feed-card.js`
+- URL: `/reolink_feed/reolink-feed-card.js`
 - Type: `module`
 
-After editing card JS, bump the resource version to force reload:
+For local development with `/local/reolink-feed-card.js`, run:
 
 ```bash
 ./scripts/bump-card-resource-version.sh
 ```
+
+This syncs the bundled card file to `config/www/reolink-feed-card.js`, bumps the resource `?v=` value, and restarts Home Assistant.
 
 Then add a manual card:
 
@@ -102,13 +104,30 @@ Implemented:
 - WebSocket endpoints:
   - `reolink_feed/list`
   - `reolink_feed/resolve_recording`
+  - `reolink_feed/rebuild_from_history`
 - mock detection service: `reolink_feed.mock_detection`
-- custom Lovelace card UI (`config/www/reolink-feed-card.js`)
+- custom Lovelace card UI bundled in integration (`custom_components/reolink_feed/frontend/reolink-feed-card.js`)
 
 Not yet implemented:
-- HACS packaging/publishing (integration + dashboard plugin repos)
 - automated tests for backend logic and resolver matching
 - production hardening for all Reolink/NVR edge cases
+
+## HACS Packaging (single repo)
+
+This repo is now a HACS `Integration` repo that also ships the custom card.
+
+Files used by HACS:
+
+- root `hacs.json`
+- integration code under `custom_components/reolink_feed/`
+- bundled card under `custom_components/reolink_feed/frontend/reolink-feed-card.js`
+
+Install flow in HACS:
+
+1. Add this GitHub repository as custom repository type `Integration`.
+2. Install `Reolink Feed`.
+3. Add Lovelace resource URL `/reolink_feed/reolink-feed-card.js` with type `module`.
+4. Add card `type: custom:reolink-feed-card`.
 
 ## Testing
 
@@ -182,8 +201,7 @@ Response:
 
 ## TODO Roadmap
 
-1. HACS packaging + release metadata (integration + card)
-2. CI validation (`hassfest`, HACS checks)
-3. Automated tests for merge logic, snapshot mapping, and resolver matching
-4. Frontend UX polish and accessibility pass
-5. Optional fallback linking to continuous recordings (v1.1)
+1. Publish release tags and test HACS install path end-to-end
+2. Automated tests for merge logic, snapshot mapping, and resolver matching
+3. Frontend UX polish and accessibility pass
+4. Optional fallback linking to continuous recordings (v1.1)
