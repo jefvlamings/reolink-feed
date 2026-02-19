@@ -1,16 +1,24 @@
 """Unit tests for feed helper functions."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from custom_components.reolink_feed.const import MERGE_WINDOW_SECONDS, RECORDING_DEFAULT_CLIP_DURATION_SECONDS
 from custom_components.reolink_feed.feed import (
     _build_detection_items_for_entity,
     _camera_name_from_state,
+    _clip_bounds_from_title,
     _duration_token_to_seconds,
+    _find_matching_item_index,
+    _merge_existing_item,
+    _merge_rebuilt_with_existing_items,
     _events_overlap_or_close,
     _merge_detection_items,
+    _overlap_seconds,
     _parse_day_from_media_node,
+    _recording_label_title,
+    _select_day_nodes,
+    _select_low_resolution_node,
 )
 from custom_components.reolink_feed.models import DetectionItem
 
@@ -98,3 +106,150 @@ def test_build_detection_items_for_entity_builds_on_off_pairs() -> None:
     assert items[0].camera_name == "Front"
     assert items[0].duration_s == 12
 
+
+def test_merge_existing_item_keeps_snapshot_and_extends_duration() -> None:
+    start = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+    mid = start + timedelta(seconds=10)
+    end = start + timedelta(seconds=20)
+    existing = DetectionItem(
+        id="existing",
+        start_ts=start.isoformat(),
+        end_ts=mid.isoformat(),
+        duration_s=10,
+        label="person",
+        source_entity_id="binary_sensor.front_person",
+        camera_name="Front",
+        snapshot_url="/local/reolink_feed/front/snap.jpg",
+        recording={"status": "pending"},
+    )
+    rebuilt = DetectionItem(
+        id="rebuilt",
+        start_ts=start.isoformat(),
+        end_ts=end.isoformat(),
+        duration_s=20,
+        label="person",
+        source_entity_id="binary_sensor.front_person",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "linked", "local_url": "/local/reolink_feed/front/clip.mp4"},
+    )
+
+    merged = _merge_existing_item(existing, rebuilt)
+
+    assert merged.id == "existing"
+    assert merged.snapshot_url == "/local/reolink_feed/front/snap.jpg"
+    assert merged.end_ts == end.isoformat()
+    assert merged.duration_s == 20
+    assert merged.recording["status"] == "linked"
+
+
+def test_find_matching_item_index_happy_path() -> None:
+    start = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+    existing = DetectionItem(
+        id="a",
+        start_ts=start.isoformat(),
+        end_ts=(start + timedelta(seconds=10)).isoformat(),
+        duration_s=10,
+        label="person",
+        source_entity_id="binary_sensor.front_person",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+    candidate = DetectionItem(
+        id="b",
+        start_ts=(start + timedelta(seconds=2)).isoformat(),
+        end_ts=(start + timedelta(seconds=12)).isoformat(),
+        duration_s=10,
+        label="person",
+        source_entity_id="binary_sensor.front_person",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+
+    assert _find_matching_item_index([existing], candidate) == 0
+
+
+def test_merge_rebuilt_with_existing_items_adds_and_merges() -> None:
+    start = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+    existing = DetectionItem(
+        id="existing",
+        start_ts=start.isoformat(),
+        end_ts=(start + timedelta(seconds=10)).isoformat(),
+        duration_s=10,
+        label="person",
+        source_entity_id="binary_sensor.front_person",
+        camera_name="Front",
+        snapshot_url="/local/reolink_feed/front/snap.jpg",
+        recording={"status": "pending"},
+    )
+    rebuilt_matching = DetectionItem(
+        id="rebuilt_match",
+        start_ts=(start + timedelta(seconds=1)).isoformat(),
+        end_ts=(start + timedelta(seconds=15)).isoformat(),
+        duration_s=14,
+        label="person",
+        source_entity_id="binary_sensor.front_person",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+    rebuilt_new = DetectionItem(
+        id="rebuilt_new",
+        start_ts=(start + timedelta(minutes=1)).isoformat(),
+        end_ts=(start + timedelta(minutes=1, seconds=7)).isoformat(),
+        duration_s=7,
+        label="pet",
+        source_entity_id="binary_sensor.front_pet",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+
+    merged_items, added_count, merged_count, resolve_ids = _merge_rebuilt_with_existing_items(
+        [existing], [rebuilt_matching, rebuilt_new]
+    )
+
+    assert len(merged_items) == 2
+    assert added_count == 1
+    assert merged_count == 1
+    assert "existing" in resolve_ids
+    assert "rebuilt_new" in resolve_ids
+
+
+def test_clip_and_overlap_happy_path() -> None:
+    clip = _clip_bounds_from_title(date(2026, 2, 19), "12:00:00 00:00:30", timezone.utc)
+    assert clip is not None
+    clip_start, clip_end = clip
+    assert clip_start.isoformat() == "2026-02-19T12:00:00+00:00"
+    assert clip_end.isoformat() == "2026-02-19T12:00:30+00:00"
+
+    overlap = _overlap_seconds(
+        datetime(2026, 2, 19, 12, 0, 10, tzinfo=timezone.utc),
+        datetime(2026, 2, 19, 12, 0, 40, tzinfo=timezone.utc),
+        clip_start,
+        clip_end,
+    )
+    assert overlap == 20.0
+
+
+def test_label_title_and_resolution_selection_happy_path() -> None:
+    assert _recording_label_title("person") == "Person"
+    assert _recording_label_title("pet") == "Pet"
+
+    nodes = [
+        SimpleNamespace(title="High Resolution", media_content_id="media-source://reolink/CAM|main"),
+        SimpleNamespace(title="Low Resolution", media_content_id="media-source://reolink/CAM|sub"),
+    ]
+    selected = _select_low_resolution_node(nodes)
+    assert selected is not None
+    assert selected.title == "Low Resolution"
+
+    day_nodes = [
+        SimpleNamespace(media_content_id="media-source://reolink/DAY|x|x|x|2026|2|18", title=""),
+        SimpleNamespace(media_content_id="media-source://reolink/DAY|x|x|x|2026|2|19", title=""),
+    ]
+    selected_days = _select_day_nodes(day_nodes, {date(2026, 2, 19)})
+    assert len(selected_days) == 1
+    assert selected_days[0][1] == date(2026, 2, 19)
