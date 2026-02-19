@@ -48,6 +48,22 @@ _LABEL_TITLES = {
 SECTION_RETENTION_POLICY = "retention_policy"
 
 
+def _coerce_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        coerced = default
+    return max(minimum, min(maximum, coerced))
+
+
+def _coerce_float(value: object, default: float, minimum: float, maximum: float) -> float:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        coerced = default
+    return max(minimum, min(maximum, coerced))
+
+
 class ReolinkFeedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle config flow for Reolink feed."""
 
@@ -85,13 +101,25 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             ]
             if not selected:
                 selected = list(DEFAULT_ENABLED_DETECTION_LABELS)
-            retention_hours = int(merged_input.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS))
-            retention_hours = max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, retention_hours))
-            max_detections = int(merged_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS))
-            max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
+            retention_hours = _coerce_int(
+                merged_input.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS),
+                DEFAULT_RETENTION_HOURS,
+                MIN_RETENTION_HOURS,
+                MAX_RETENTION_HOURS,
+            )
+            max_detections = _coerce_int(
+                merged_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS),
+                DEFAULT_MAX_DETECTIONS,
+                MIN_MAX_DETECTIONS,
+                MAX_MAX_DETECTIONS,
+            )
             rebuild_now = bool(merged_input.get(CONF_REBUILD_NOW, False))
-            max_storage_gb = float(merged_input.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB))
-            max_storage_gb = max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, max_storage_gb))
+            max_storage_gb = _coerce_float(
+                merged_input.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB),
+                DEFAULT_MAX_STORAGE_GB,
+                MIN_MAX_STORAGE_GB,
+                MAX_MAX_STORAGE_GB,
+            )
             if rebuild_now:
                 entry = next(
                     (
@@ -122,18 +150,24 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             default_labels = list(DEFAULT_ENABLED_DETECTION_LABELS)
         if not default_labels:
             default_labels = list(DEFAULT_ENABLED_DETECTION_LABELS)
-        retention_hours = int(
-            self._config_entry.options.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS)
+        retention_hours = _coerce_int(
+            self._config_entry.options.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS),
+            DEFAULT_RETENTION_HOURS,
+            MIN_RETENTION_HOURS,
+            MAX_RETENTION_HOURS,
         )
-        retention_hours = max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, retention_hours))
-        max_detections = int(
-            self._config_entry.options.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS)
+        max_detections = _coerce_int(
+            self._config_entry.options.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS),
+            DEFAULT_MAX_DETECTIONS,
+            MIN_MAX_DETECTIONS,
+            MAX_MAX_DETECTIONS,
         )
-        max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
-        max_storage_gb = float(
-            self._config_entry.options.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB)
+        max_storage_gb = _coerce_float(
+            self._config_entry.options.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB),
+            DEFAULT_MAX_STORAGE_GB,
+            MIN_MAX_STORAGE_GB,
+            MAX_MAX_STORAGE_GB,
         )
-        max_storage_gb = max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, max_storage_gb))
 
         retention_section_schema = {
             vol.Required(CONF_RETENTION_HOURS, default=retention_hours): selector.NumberSelector(
