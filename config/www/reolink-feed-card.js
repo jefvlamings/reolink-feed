@@ -24,7 +24,6 @@ const CARD_I18N = {
     file: "File",
     go_to_folder: "Go to folder",
     reset: "Reset",
-    resetting: "Resetting...",
     delete: "Delete",
     no_detections: "No detections in range.",
     previous: "Previous",
@@ -36,9 +35,7 @@ const CARD_I18N = {
     close: "Close",
     close_info_dialog: "Close info dialog",
     snapshot: "Snapshot",
-    reset_feed_from_history: "Reset feed from history",
     page_size: "Page size",
-    labels: "Labels",
   },
   nl: {
     person: "Persoon",
@@ -57,7 +54,6 @@ const CARD_I18N = {
     file: "Bestand",
     go_to_folder: "Ga naar map",
     reset: "Reset",
-    resetting: "Resetten...",
     delete: "Verwijderen",
     no_detections: "Geen detecties in bereik.",
     previous: "Vorige",
@@ -69,9 +65,7 @@ const CARD_I18N = {
     close: "Sluiten",
     close_info_dialog: "Sluit detectiedialoog",
     snapshot: "Snapshot",
-    reset_feed_from_history: "Reset feed vanuit geschiedenis",
     page_size: "Paginagrootte",
-    labels: "Labels",
   },
 };
 
@@ -85,7 +79,6 @@ class ReolinkFeedCard extends HTMLElement {
     this._error = null;
     this._loading = false;
     this._resolvingIds = new Set();
-    this._rebuilding = false;
     this._page = 1;
     this._availableLabels = [...SUPPORTED_CARD_LABELS];
     this._activeLabels = new Set();
@@ -257,32 +250,6 @@ class ReolinkFeedCard extends HTMLElement {
     }
   }
 
-  async _rebuildFromHistory() {
-    if (!this._hass || !this._config || this._rebuilding) {
-      return;
-    }
-
-    this._rebuilding = true;
-    this._error = null;
-    this._render();
-    try {
-      const result = await this._hass.callWS({
-        type: "reolink_feed/rebuild_from_history",
-        per_entity_changes: this._config.per_entity_changes,
-      });
-      const itemCount = Number(result?.item_count || 0);
-      const entityCount = Number(result?.entity_count || 0);
-      this._showToast(`Rebuilt ${itemCount} items from ${entityCount} sensors`);
-      await this._loadItems();
-    } catch (err) {
-      this._showToast(`Rebuild failed: ${err?.message || err}`);
-      this._error = err?.message || String(err);
-    } finally {
-      this._rebuilding = false;
-      this._render();
-    }
-  }
-
   async _refreshRecording(item, showToast = true, showSpinner = true) {
     if (!this._hass || !item?.id) return item?.recording || null;
     if (showSpinner) {
@@ -314,6 +281,16 @@ class ReolinkFeedCard extends HTMLElement {
 
   async _openFromThumbnail(item) {
     if (!this._hass) return;
+    const localUrl = item?.recording?.local_url;
+    if (localUrl) {
+      this._openModal(
+        `${item.camera_name} · ${this._labelText(item.label)}`,
+        localUrl,
+        "video/mp4",
+        "video"
+      );
+      return;
+    }
     const recording = await this._refreshRecording(item, false, false);
     if (!recording || recording.status !== "linked" || !recording.media_content_id) {
       if (item?.snapshot_url) {
@@ -485,6 +462,81 @@ class ReolinkFeedCard extends HTMLElement {
     return `/Reolink/${camera}/Low Resolution/${year}-${month}-${day}/${labelTitle}`;
   }
 
+  _fileExtensionForLabel(label) {
+    if (label === "motion") return "mp4";
+    if (label === "vehicle") return "mp4";
+    if (label === "visitor") return "mp4";
+    if (label === "pet") return "mp4";
+    return "mp4";
+  }
+
+  _decodeMaybeBase64(value) {
+    if (!value) return "";
+    try {
+      // Reolink media ids may contain base64-encoded file identifiers.
+      const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+      const decoded = atob(padded);
+      if (/[\u0000-\u0008\u000e-\u001f]/.test(decoded)) return value;
+      return decoded;
+    } catch (_err) {
+      return value;
+    }
+  }
+
+  _isPlausibleFilename(name) {
+    if (!name) return false;
+    if (name.length < 3 || name.length > 255) return false;
+    if (/[\\/:*?"<>|\u0000-\u001f]/.test(name)) return false;
+    if (!/\.[a-z0-9]{2,5}$/i.test(name)) return false;
+    // Keep names readable; reject high-entropy/binary-looking outputs.
+    if (!/^[\w .\-()]+$/i.test(name)) return false;
+    return true;
+  }
+
+  _recordingFilename(item) {
+    const localUrl = item?.recording?.local_url;
+    if (typeof localUrl === "string" && localUrl) {
+      const fromLocal = localUrl.split("?")[0].split("/").pop() || "";
+      if (this._isPlausibleFilename(fromLocal)) return fromLocal;
+    }
+    const mediaContentId = item?.recording?.media_content_id || "";
+    if (mediaContentId.includes("FILE|")) {
+      const parts = mediaContentId.split("|");
+      const raw = parts[parts.length - 1] || "";
+      const decodedRaw = decodeURIComponent(raw);
+      const maybeDecoded = this._decodeMaybeBase64(decodedRaw);
+      const candidate = String(maybeDecoded).split("/").pop() || "";
+      if (candidate) {
+        if (this._isPlausibleFilename(candidate)) return candidate;
+      }
+    }
+
+    const dt = new Date(item?.start_ts || Date.now());
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, "0");
+    const dd = String(dt.getDate()).padStart(2, "0");
+    const hh = String(dt.getHours()).padStart(2, "0");
+    const mi = String(dt.getMinutes()).padStart(2, "0");
+    const ss = String(dt.getSeconds()).padStart(2, "0");
+    const label = normalizeCardLabel(item?.label) || "detection";
+    return `${yyyy}${mm}${dd}_${hh}${mi}${ss}_${label}.${this._fileExtensionForLabel(label)}`;
+  }
+
+  _mediaFileDisplayPath(item) {
+    return `${this._mediaFolderDisplayPath(item)}/${this._recordingFilename(item)}`;
+  }
+
+  _recordingLinkHref(item) {
+    const localUrl = item?.recording?.local_url;
+    if (typeof localUrl === "string" && localUrl) {
+      return localUrl;
+    }
+    return `/media-browser/browser/${encodeURIComponent(
+      this._mediaBrowserTarget(item, item?.recording?.media_content_id || "")
+    )}`;
+  }
+
   _labelIcon(label) {
     const icon = this._labelIconName(label);
     const labelText = this._labelText(label);
@@ -603,8 +655,13 @@ class ReolinkFeedCard extends HTMLElement {
             <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("logbook")}</a>
           </div>
           <div>
-            <span><strong>${this._t("file")}:</strong> ${this._mediaFolderDisplayPath(infoItem)} </span>
-            <a href="/media-browser/browser/${encodeURIComponent(this._mediaBrowserTarget(infoItem, infoItem?.recording?.media_content_id || ""))}" target="_blank" rel="noopener">(${this._t("go_to_folder")})</a>
+            <span><strong>${this._t("file")}:</strong> </span>
+            <a
+              href="${this._recordingLinkHref(infoItem)}"
+              target="_blank"
+              rel="noopener"
+              title="${this._mediaFileDisplayPath(infoItem)}"
+            >${this._recordingFilename(infoItem)}</a>
           </div>
         </div>
         <div class="info-actions">
@@ -625,18 +682,12 @@ class ReolinkFeedCard extends HTMLElement {
       <style>
         :host { display: block; }
         ha-card { padding: 10px; }
-        .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 10px; }
-        .topbar { justify-content: space-between; }
+        .topbar { display: flex; justify-content: flex-start; align-items: center; gap: 10px; margin-bottom: 10px; }
         .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .filter-pill { border: 1px solid rgba(255,255,255,0.22); background: transparent; color: var(--primary-text-color); border-radius: 999px; height: 30px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.55; }
         .filter-pill ha-icon { --mdc-icon-size: 14px; }
         .filter-pill.active { border-color: #fff; color: #fff; opacity: 1; }
         .filter-pill:hover { opacity: 0.9; background: rgba(255,255,255,0.08); }
-        .actions { display: flex; align-items: center; gap: 8px; }
-        button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
-        button.rebuild:hover { background: var(--secondary-background-color); }
-        button.rebuild:disabled { opacity: 0.6; cursor: default; }
-        button.rebuild ha-icon { --mdc-icon-size: 15px; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
         .page-info { color: var(--secondary-text-color); font-size: 12px; min-width: 84px; text-align: center; }
         button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
@@ -695,12 +746,6 @@ class ReolinkFeedCard extends HTMLElement {
           <div class="filters">
             ${filterPills}
           </div>
-          <div class="actions">
-            <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="${this._t("reset_feed_from_history")}">
-              <ha-icon icon="mdi:bomb"></ha-icon>
-              <span>${this._rebuilding ? this._t("resetting") : this._t("reset")}</span>
-            </button>
-          </div>
         </div>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">${this._t("no_detections")}</div>`}
@@ -738,11 +783,6 @@ class ReolinkFeedCard extends HTMLElement {
       }
     });
 
-    const rebuildButton = this.shadowRoot.querySelector("button.rebuild");
-    rebuildButton?.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      this._rebuildFromHistory();
-    });
     this.shadowRoot.querySelectorAll(".filter-pill").forEach((el) => {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();

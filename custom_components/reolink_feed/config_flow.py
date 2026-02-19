@@ -8,9 +8,12 @@ from homeassistant.helpers import selector
 import voluptuous as vol
 
 from .const import (
+    CONF_CACHE_RECORDINGS,
     CONF_ENABLED_LABELS,
     CONF_MAX_DETECTIONS,
+    CONF_REBUILD_NOW,
     CONF_RETENTION_HOURS,
+    DEFAULT_CACHE_RECORDINGS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DEFAULT_MAX_DETECTIONS,
     DEFAULT_RETENTION_HOURS,
@@ -78,12 +81,28 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             retention_hours = max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, retention_hours))
             max_detections = int(user_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS))
             max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
+            rebuild_now = bool(user_input.get(CONF_REBUILD_NOW, False))
+            cache_recordings = bool(user_input.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS))
+            if rebuild_now:
+                entry = next(
+                    (
+                        candidate
+                        for candidate in self.hass.config_entries.async_entries(DOMAIN)
+                        if candidate.entry_id == self._config_entry.entry_id
+                    ),
+                    None,
+                )
+                runtime_data = getattr(entry, "runtime_data", None) if entry else None
+                manager = getattr(runtime_data, "manager", None)
+                if manager is not None:
+                    await manager.async_rebuild_from_history()
             return self.async_create_entry(
                 title="",
                 data={
                     CONF_ENABLED_LABELS: selected,
                     CONF_RETENTION_HOURS: retention_hours,
                     CONF_MAX_DETECTIONS: max_detections,
+                    CONF_CACHE_RECORDINGS: cache_recordings,
                 },
             )
 
@@ -102,6 +121,9 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             self._config_entry.options.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS)
         )
         max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
+        cache_recordings = bool(
+            self._config_entry.options.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS)
+        )
 
         return self.async_show_form(
             step_id="init",
@@ -126,6 +148,10 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
+                    vol.Optional(CONF_REBUILD_NOW, default=False): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_CACHE_RECORDINGS, default=cache_recordings
+                    ): selector.BooleanSelector(),
                 }
             ),
         )

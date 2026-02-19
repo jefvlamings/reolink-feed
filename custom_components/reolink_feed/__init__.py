@@ -28,6 +28,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CARD_FILENAME,
     CARD_URL_PATH,
+    CONF_CACHE_RECORDINGS,
     CONF_ENABLED_LABELS,
     CONF_MAX_DETECTIONS,
     CONF_RETENTION_HOURS,
@@ -72,6 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
         _enabled_labels_from_entry(entry),
         _retention_hours_from_entry(entry),
         _max_detections_from_entry(entry),
+        _cache_recordings_from_entry(entry),
     )
     await manager.async_start()
     options_unsub = entry.add_update_listener(_async_reload_entry_on_update)
@@ -395,3 +397,8 @@ def _max_detections_from_entry(entry: ReolinkFeedConfigEntry) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_MAX_DETECTIONS
     return max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, value))
+
+
+def _cache_recordings_from_entry(entry: ReolinkFeedConfigEntry) -> bool:
+    return bool(entry.options.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS))
+    DEFAULT_CACHE_RECORDINGS,

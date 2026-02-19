@@ -12,19 +12,25 @@ import shutil
 from typing import Any
 import uuid
 
+from aiohttp import ClientError
 from homeassistant.components.camera import async_get_image
+from homeassistant.components.http.auth import async_sign_path
+from homeassistant.components.media_source import async_resolve_media
 from homeassistant.components.media_player import BrowseError
 from homeassistant.components.media_source import async_browse_media
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .const import (
     CLEANUP_INTERVAL_SECONDS,
+    DEFAULT_CACHE_RECORDINGS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DEFAULT_MAX_DETECTIONS,
     DEFAULT_RETENTION_HOURS,
@@ -60,6 +66,7 @@ class ReolinkFeedManager:
         enabled_labels: set[str] | None = None,
         retention_hours: int | None = None,
         max_detections: int | None = None,
+        cache_recordings: bool = DEFAULT_CACHE_RECORDINGS,
     ) -> None:
         self.hass = hass
         self._store = DetectionStore(hass)
@@ -77,6 +84,7 @@ class ReolinkFeedManager:
         self._enabled_labels = self._normalize_enabled_labels(enabled_labels)
         self._retention_hours = self._normalize_retention_hours(retention_hours)
         self._max_detections = self._normalize_max_detections(max_detections)
+        self._cache_recordings = bool(cache_recordings)
 
     async def async_start(self) -> None:
         """Load initial state and begin listening."""
@@ -205,7 +213,7 @@ class ReolinkFeedManager:
         return changed
 
     async def async_prune_expired_items(self) -> int:
-        """Drop items older than retention window and remove their snapshots."""
+        """Drop items older than retention window and remove local assets."""
         cutoff = dt_util.utcnow() - timedelta(hours=self._retention_hours)
         kept: list[DetectionItem] = []
         removed: list[DetectionItem] = []
@@ -233,7 +241,7 @@ class ReolinkFeedManager:
         return len(removed)
 
     async def async_delete_item(self, item_id: str) -> None:
-        """Delete one feed item and its snapshot."""
+        """Delete one feed item and local assets."""
         item = self._get_item_by_id(item_id)
         if item is None:
             raise ValueError(f"Unknown item id: {item_id}")
@@ -289,6 +297,8 @@ class ReolinkFeedManager:
             if item.id in resolve_item_ids and item.end_ts is not None
         }
         await self._async_resolve_recordings_immediately(sorted(resolvable_ids))
+        if self._cache_recordings:
+            await self._async_cache_recordings_for_items(self._items)
         await self._store.async_save(self._items)
         return {
             "entity_count": len(entity_ids),
@@ -469,15 +479,32 @@ class ReolinkFeedManager:
 
         recording = item.recording or {"status": "pending"}
         if recording.get("status") == "linked":
+            if (
+                self._cache_recordings
+                and not recording.get("local_url")
+                and isinstance(recording.get("media_content_id"), str)
+            ):
+                local_url = await self._async_cache_recording_file(
+                    item, recording["media_content_id"]
+                )
+                if local_url:
+                    recording["local_url"] = local_url
+                    item.recording = recording
+                    self._schedule_save()
             return recording
 
         media_content_id = await self._async_find_recording_media_content_id(item)
         if media_content_id:
+            local_url = None
+            if self._cache_recordings and item.end_ts is not None:
+                local_url = await self._async_cache_recording_file(item, media_content_id)
             item.recording = {
                 "status": "linked",
                 "media_content_id": media_content_id,
                 "resolved_at": datetime.now().astimezone().isoformat(),
             }
+            if local_url:
+                item.recording["local_url"] = local_url
             self._cancel_recording_resolution(item.id)
             self._schedule_save()
             return item.recording
@@ -666,6 +693,88 @@ class ReolinkFeedManager:
                 return None
         return best[2]
 
+    async def _async_cache_recordings_for_items(self, items: list[DetectionItem]) -> None:
+        semaphore = asyncio.Semaphore(2)
+
+        async def _cache_one(item: DetectionItem) -> None:
+            recording = item.recording or {}
+            if recording.get("status") != "linked":
+                return
+            if recording.get("local_url"):
+                return
+            media_content_id = recording.get("media_content_id")
+            if not media_content_id:
+                return
+            async with semaphore:
+                local_url = await self._async_cache_recording_file(item, media_content_id)
+                if not local_url:
+                    return
+                recording["local_url"] = local_url
+                item.recording = recording
+
+        await asyncio.gather(*[_cache_one(item) for item in items])
+
+    async def _async_cache_recording_file(
+        self, item: DetectionItem, media_content_id: str
+    ) -> str | None:
+        relative = _recording_relative_path_for_item(item)
+        absolute = self._www_root / relative
+        if absolute.exists():
+            return f"/local/{relative.as_posix()}"
+
+        try:
+            resolved = await async_resolve_media(self.hass, media_content_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Failed to resolve media for local cache (%s): %s", item.id, err)
+            return None
+
+        media_url = self._make_absolute_ha_url(self._sign_ha_path_if_needed(resolved.url))
+        if not media_url:
+            return None
+
+        session = async_get_clientsession(self.hass, verify_ssl=False)
+        try:
+            async with session.get(media_url, timeout=120) as response:
+                if response.status >= 400:
+                    _LOGGER.debug(
+                        "Failed to download recording for cache (%s): HTTP %s",
+                        item.id,
+                        response.status,
+                    )
+                    return None
+                payload = await response.read()
+        except (ClientError, TimeoutError) as err:
+            _LOGGER.debug("Recording cache download failed (%s): %s", item.id, err)
+            return None
+
+        if not payload:
+            return None
+
+        try:
+            await self.hass.async_add_executor_job(_write_snapshot_file, absolute, payload)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Failed to persist recording cache (%s): %s", item.id, err)
+            return None
+        return f"/local/{relative.as_posix()}"
+
+    def _sign_ha_path_if_needed(self, url: str) -> str:
+        if not url.startswith("/"):
+            return url
+        if "authSig=" in url:
+            return url
+        return async_sign_path(self.hass, url, timedelta(days=7), use_content_user=True)
+
+    def _make_absolute_ha_url(self, url: str) -> str | None:
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        if not url.startswith("/"):
+            return None
+        try:
+            base = get_url(self.hass, require_ssl=False)
+        except NoURLAvailableError:
+            base = "http://127.0.0.1:8123"
+        return f"{base}{url}"
+
     async def _async_write_dummy_snapshot(self, item: DetectionItem) -> str:
         started_local = item.start_dt.astimezone()
         camera_slug = slugify(item.camera_name) or "camera"
@@ -712,6 +821,8 @@ class ReolinkFeedManager:
         paths: set[Path] = set()
         for item in items:
             for path in _snapshot_paths_for_item(self.hass, self._www_root, item):
+                paths.add(path)
+            for path in _cached_recording_paths_for_item(self._www_root, item):
                 paths.add(path)
         if not paths:
             return
@@ -1170,6 +1281,25 @@ def _snapshot_paths_for_item(hass: HomeAssistant, www_root: Path, item: Detectio
         for root in _candidate_legacy_snapshot_roots(hass):
             paths.append(root / relative)
     return paths
+
+
+def _cached_recording_paths_for_item(www_root: Path, item: DetectionItem) -> list[Path]:
+    recording = item.recording or {}
+    local_url = recording.get("local_url")
+    if not isinstance(local_url, str):
+        return []
+    if not local_url.startswith("/local/reolink_feed/"):
+        return []
+    relative = local_url.removeprefix("/local/")
+    return [www_root / relative]
+
+
+def _recording_relative_path_for_item(item: DetectionItem) -> Path:
+    started_local = item.start_dt.astimezone()
+    camera_slug = slugify(item.camera_name) or "camera"
+    day_folder = started_local.strftime("%Y-%m-%d")
+    filename = f"{started_local.strftime('%H%M%S')}_{item.label}.mp4"
+    return Path("reolink_feed") / camera_slug / day_folder / filename
 
 
 def _candidate_legacy_snapshot_roots(hass: HomeAssistant) -> list[Path]:

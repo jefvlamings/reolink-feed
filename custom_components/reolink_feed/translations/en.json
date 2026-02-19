@@ -18,7 +18,9 @@
         "data": {
           "enabled_labels": "Enabled detections",
           "retention_hours": "Retention (hours)",
-          "max_detections": "Maximum detections"
+          "max_detections": "Maximum detections",
+          "rebuild_now": "Rebuild feed now",
+          "cache_recordings": "Cache recordings locally"
         }
       }
     }
