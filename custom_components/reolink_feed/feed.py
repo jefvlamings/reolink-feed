@@ -21,6 +21,7 @@ from homeassistant.components.media_source import async_browse_media
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.network import NoURLAvailableError, get_url
@@ -676,9 +677,7 @@ class ReolinkFeedManager:
         }
         try:
             root = await async_browse_media(self.hass, "media-source://reolink")
-        except BrowseError:
-            return None
-        except Exception as err:  # noqa: BLE001
+        except (BrowseError, HomeAssistantError) as err:
             _LOGGER.debug("Unable to browse reolink media root: %s", err)
             return None
 
@@ -688,7 +687,13 @@ class ReolinkFeedManager:
 
         try:
             resolution_root = await async_browse_media(self.hass, camera_node.media_content_id)
-        except Exception:
+        except (BrowseError, HomeAssistantError) as err:
+            _LOGGER.debug(
+                "Unable to browse reolink camera node for item %s (%s): %s",
+                item.id,
+                camera_node.media_content_id,
+                err,
+            )
             return None
 
         resolution_node = _select_low_resolution_node(resolution_root.children or [])
@@ -697,7 +702,13 @@ class ReolinkFeedManager:
 
         try:
             days_root = await async_browse_media(self.hass, resolution_node.media_content_id)
-        except Exception:
+        except (BrowseError, HomeAssistantError) as err:
+            _LOGGER.debug(
+                "Unable to browse reolink day root for item %s (%s): %s",
+                item.id,
+                resolution_node.media_content_id,
+                err,
+            )
             return None
 
         day_nodes = _select_day_nodes(days_root.children or [], day_candidates)
@@ -707,7 +718,13 @@ class ReolinkFeedManager:
                 continue
             try:
                 day_listing = await async_browse_media(self.hass, day_node.media_content_id)
-            except Exception:
+            except (BrowseError, HomeAssistantError) as err:
+                _LOGGER.debug(
+                    "Unable to browse reolink day listing for item %s (%s): %s",
+                    item.id,
+                    day_node.media_content_id,
+                    err,
+                )
                 continue
 
             file_nodes: list[Any] = []
@@ -725,7 +742,13 @@ class ReolinkFeedManager:
                         event_listing = await async_browse_media(
                             self.hass, event_dir.media_content_id
                         )
-                    except Exception:
+                    except (BrowseError, HomeAssistantError) as err:
+                        _LOGGER.debug(
+                            "Unable to browse reolink event folder for item %s (%s): %s",
+                            item.id,
+                            event_dir.media_content_id,
+                            err,
+                        )
                         continue
                     file_nodes.extend(event_listing.children or [])
             else:
