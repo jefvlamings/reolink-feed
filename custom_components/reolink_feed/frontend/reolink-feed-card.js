@@ -21,7 +21,8 @@ const CARD_I18N = {
     detection: "Detection",
     history: "History",
     logbook: "Logbook",
-    file: "File",
+    recording: "Recording",
+    photo: "Photo",
     go_to_folder: "Go to folder",
     reset: "Reset",
     delete: "Delete",
@@ -51,7 +52,8 @@ const CARD_I18N = {
     detection: "Detectie",
     history: "Geschiedenis",
     logbook: "Logboek",
-    file: "Bestand",
+    recording: "Opname",
+    photo: "Foto",
     go_to_folder: "Ga naar map",
     reset: "Reset",
     delete: "Verwijderen",
@@ -414,6 +416,23 @@ class ReolinkFeedCard extends HTMLElement {
     return "#";
   }
 
+  _snapshotFilename(item) {
+    const snapshotUrl = item?.snapshot_url;
+    if (typeof snapshotUrl === "string" && snapshotUrl) {
+      const fromLocal = snapshotUrl.split("?")[0].split("/").pop() || "";
+      if (this._isPlausibleFilename(fromLocal)) return fromLocal;
+    }
+    return "";
+  }
+
+  _snapshotLinkHref(item) {
+    const snapshotUrl = item?.snapshot_url;
+    if (typeof snapshotUrl === "string" && snapshotUrl) {
+      return snapshotUrl;
+    }
+    return "#";
+  }
+
   _labelIcon(label) {
     const icon = this._labelIconName(label);
     const labelText = this._labelText(label);
@@ -484,6 +503,12 @@ class ReolinkFeedCard extends HTMLElement {
       infoItem && infoFileHref && infoFileHref !== "#"
         ? `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(infoItem)}">${infoFileName}</a>`
         : `<span title="${infoItem ? this._mediaFileDisplayPath(infoItem) : ""}">${infoFileName}</span>`;
+    const infoPhotoHref = infoItem ? this._snapshotLinkHref(infoItem) : "";
+    const infoPhotoName = infoItem ? this._snapshotFilename(infoItem) : "";
+    const infoPhotoLinkHtml =
+      infoItem && infoPhotoHref && infoPhotoHref !== "#"
+        ? `<a href="${infoPhotoHref}" target="_blank" rel="noopener" title="${infoPhotoHref}">${infoPhotoName}</a>`
+        : `<span title="${infoPhotoHref || ""}">${infoPhotoName || "-"}</span>`;
     const infoMediaHtml =
       infoItem && infoItem.recording?.local_url
         ? `<video class="info-video" controls playsinline preload="metadata" src="${infoItem.recording.local_url}"></video>`
@@ -509,8 +534,12 @@ class ReolinkFeedCard extends HTMLElement {
             <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("logbook")}</a>
           </div>
           <div>
-            <span><strong>${this._t("file")}:</strong> </span>
+            <span><strong>${this._t("recording")}:</strong> </span>
             ${infoFileLinkHtml}
+          </div>
+          <div>
+            <span><strong>${this._t("photo")}:</strong> </span>
+            ${infoPhotoLinkHtml}
           </div>
         </div>
         <div class="info-actions">
