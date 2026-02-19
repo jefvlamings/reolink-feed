@@ -53,3 +53,9 @@ SUPPORTED_SUFFIX_TO_LABEL: dict[str, str] = {
     "_beweging": "motion",
     "_bezoeker": "visitor",
 }
+
+
+def normalize_detection_label(label: str | None) -> str:
+    """Normalize user/entity label to canonical internal label."""
+    lowered = str(label or "").strip().lower()
+    return LEGACY_LABEL_ALIASES.get(lowered, lowered)

@@ -46,6 +46,7 @@ from .const import (
     MIN_MAX_STORAGE_GB,
     MIN_RETENTION_HOURS,
     SUPPORTED_DETECTION_LABELS,
+    normalize_detection_label,
 )
 from .feed import ReolinkFeedManager
 
@@ -213,7 +214,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         await entry.runtime_data.manager.async_create_mock_detection(
             source_entity_id=call.data[CONF_ENTITY_ID],
             camera_name=call.data["camera_name"],
-            label=_normalize_label(call.data["label"]),
+            label=normalize_detection_label(call.data["label"]),
             duration_s=call.data["duration_s"],
             create_dummy_snapshot=call.data["create_dummy_snapshot"],
         )
@@ -260,9 +261,9 @@ async def ws_list_items(
 
     enabled_labels = entry.runtime_data.manager.get_enabled_labels()
     requested = {
-        _normalize_label(label)
+        normalize_detection_label(label)
         for label in (msg.get("labels") or [])
-        if _normalize_label(label) in SUPPORTED_DETECTION_LABELS
+        if normalize_detection_label(label) in SUPPORTED_DETECTION_LABELS
     }
     labels = requested or enabled_labels
 
@@ -367,16 +368,11 @@ async def ws_delete_item(
     connection.send_result(msg["id"], {"ok": True})
 
 
-def _normalize_label(label: str) -> str:
-    lowered = str(label).strip().lower()
-    return LEGACY_LABEL_ALIASES.get(lowered, lowered)
-
-
 def _enabled_labels_from_entry(entry: ReolinkFeedConfigEntry) -> set[str]:
     raw = entry.options.get(CONF_ENABLED_LABELS)
     selected: list[str]
     if isinstance(raw, list):
-        selected = [_normalize_label(value) for value in raw]
+        selected = [normalize_detection_label(value) for value in raw]
     else:
         selected = list(DEFAULT_ENABLED_DETECTION_LABELS)
     normalized = {value for value in selected if value in SUPPORTED_DETECTION_LABELS}

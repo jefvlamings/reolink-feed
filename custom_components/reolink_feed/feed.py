@@ -34,7 +34,6 @@ from .const import (
     DEFAULT_MAX_DETECTIONS,
     DEFAULT_MAX_STORAGE_GB,
     DEFAULT_RETENTION_HOURS,
-    LEGACY_LABEL_ALIASES,
     MAX_MAX_DETECTIONS,
     MAX_MAX_STORAGE_GB,
     MAX_RETENTION_HOURS,
@@ -49,6 +48,7 @@ from .const import (
     SNAPSHOT_DELAY_SECONDS,
     SUPPORTED_DETECTION_LABELS,
     SUPPORTED_SUFFIX_TO_LABEL,
+    normalize_detection_label,
 )
 from .models import DetectionItem
 from .storage import DetectionStore
@@ -200,7 +200,7 @@ class ReolinkFeedManager:
     def _normalize_item_labels(self) -> bool:
         changed = False
         for item in self._items:
-            normalized = self._normalize_label(item.label)
+            normalized = normalize_detection_label(item.label)
             if normalized != item.label:
                 item.label = normalized
                 changed = True
@@ -260,7 +260,7 @@ class ReolinkFeedManager:
     def _normalize_enabled_labels(self, enabled_labels: set[str] | None) -> set[str]:
         if not enabled_labels:
             return set(DEFAULT_ENABLED_DETECTION_LABELS)
-        normalized = {self._normalize_label(label) for label in enabled_labels}
+        normalized = {normalize_detection_label(label) for label in enabled_labels}
         normalized = {label for label in normalized if label in SUPPORTED_DETECTION_LABELS}
         return normalized or set(DEFAULT_ENABLED_DETECTION_LABELS)
 
@@ -291,12 +291,8 @@ class ReolinkFeedManager:
             value = float(DEFAULT_MAX_STORAGE_GB)
         return max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, value))
 
-    def _normalize_label(self, label: str | None) -> str:
-        lowered = str(label or "").strip().lower()
-        return LEGACY_LABEL_ALIASES.get(lowered, lowered)
-
     def _label_is_enabled(self, label: str | None) -> bool:
-        return self._normalize_label(label) in self._enabled_labels
+        return normalize_detection_label(label) in self._enabled_labels
 
     async def async_migrate_legacy_snapshot_urls(self) -> bool:
         """Public migration trigger for legacy snapshot URLs."""
@@ -513,7 +509,7 @@ class ReolinkFeedManager:
         create_dummy_snapshot: bool = True,
     ) -> DetectionItem:
         """Create a synthetic detection for local development/testing."""
-        normalized_label = self._normalize_label(label)
+        normalized_label = normalize_detection_label(label)
         if normalized_label not in SUPPORTED_DETECTION_LABELS:
             raise ValueError(f"Unsupported label: {label}")
         if not self._label_is_enabled(normalized_label):
@@ -781,7 +777,9 @@ class ReolinkFeedManager:
             return f"/local/{relative.as_posix()}"
 
         try:
-            resolved = await async_resolve_media(self.hass, media_content_id)
+            resolved = await async_resolve_media(
+                self.hass, media_content_id, item.source_entity_id
+            )
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to resolve media for local cache (%s): %s", item.id, err)
             return None
@@ -928,7 +926,7 @@ class ReolinkFeedManager:
             if translation_key in SUPPORTED_DETECTION_LABELS:
                 self._label_by_sensor[entity_id] = translation_key
                 return translation_key
-            normalized_key = self._normalize_label(translation_key)
+            normalized_key = normalize_detection_label(translation_key)
             if normalized_key in SUPPORTED_DETECTION_LABELS:
                 self._label_by_sensor[entity_id] = normalized_key
                 return normalized_key
