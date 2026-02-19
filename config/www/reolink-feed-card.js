@@ -865,27 +865,9 @@ class ReolinkFeedCardEditor extends HTMLElement {
     this._emitConfig(next);
   }
 
-  _onLabelToggle(label, checked) {
-    const current = Array.isArray(this._config.labels) ? this._config.labels : [];
-    const labels = new Set(current);
-    if (checked) labels.add(label);
-    else labels.delete(label);
-    const next = { ...this._config, labels: Array.from(labels) };
-    this._emitConfig(next);
-  }
-
   _render() {
     if (!this.shadowRoot) return;
     const pageSize = Number(this._config?.page_size ?? 20);
-    const labels = new Set(
-      (Array.isArray(this._config?.labels) ? this._config.labels : [])
-        .map((label) => normalizeCardLabel(label))
-        .filter((label) => SUPPORTED_CARD_LABELS.includes(label))
-    );
-    const labelsHtml = SUPPORTED_CARD_LABELS.map(
-      (label) =>
-        `<label><input id="label_${label}" type="checkbox" ${labels.has(label) ? "checked" : ""} />${this._t(label)}</label>`
-    ).join("");
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
@@ -900,19 +882,11 @@ class ReolinkFeedCardEditor extends HTMLElement {
           padding: 8px;
           font-size: 13px;
         }
-        .labels { display: flex; gap: 12px; align-items: center; }
-        .labels label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
       </style>
       <div class="grid">
         <div class="field">
           <label for="page_size">${this._t("page_size")}</label>
           <input id="page_size" type="number" min="1" max="100" value="${pageSize}" />
-        </div>
-        <div class="field">
-          <label>${this._t("labels")}</label>
-          <div class="labels">
-            ${labelsHtml}
-          </div>
         </div>
       </div>
     `;
@@ -920,11 +894,6 @@ class ReolinkFeedCardEditor extends HTMLElement {
     this.shadowRoot.querySelector("#page_size")?.addEventListener("change", (ev) => {
       this._onNumberChange("page_size", ev.target.value, 20);
     });
-    for (const label of SUPPORTED_CARD_LABELS) {
-      this.shadowRoot.querySelector(`#label_${label}`)?.addEventListener("change", (ev) => {
-        this._onLabelToggle(label, ev.target.checked);
-      });
-    }
   }
 }
 
