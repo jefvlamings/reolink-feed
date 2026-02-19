@@ -292,7 +292,7 @@ class ReolinkFeedCard extends HTMLElement {
       return;
     }
     const recording = await this._refreshRecording(item, false, false);
-    if (!recording || recording.status !== "linked" || !recording.media_content_id) {
+    if (!recording || recording.status !== "linked" || !recording.local_url) {
       if (item?.snapshot_url) {
         this._openModal(
           `${item.camera_name} · snapshot`,
@@ -305,25 +305,12 @@ class ReolinkFeedCard extends HTMLElement {
       this._showToast("Clip not ready yet");
       return;
     }
-
-    try {
-      const resolved = await this._hass.callWS({
-        type: "media_source/resolve_media",
-        media_content_id: recording.media_content_id,
-      });
-      if (!resolved?.url) {
-        this._showToast("Could not resolve media URL");
-        return;
-      }
-      this._openModal(
-        `${item.camera_name} · ${this._labelText(item.label)}`,
-        resolved.url,
-        resolved.mime_type || "video/mp4",
-        "video"
-      );
-    } catch (err) {
-      this._showToast(`Open failed: ${err?.message || err}`);
-    }
+    this._openModal(
+      `${item.camera_name} · ${this._labelText(item.label)}`,
+      recording.local_url,
+      "video/mp4",
+      "video"
+    );
   }
 
   _openModal(title, url, mime, kind = "video") {
@@ -370,44 +357,6 @@ class ReolinkFeedCard extends HTMLElement {
     });
     event.detail = { message };
     this.dispatchEvent(event);
-  }
-
-  _openMediaBrowserForRecording(item) {
-    const mediaContentId = item?.recording?.media_content_id;
-    if (!mediaContentId) {
-      this._showToast("Recording not linked");
-      return;
-    }
-    const target = this._mediaBrowserTarget(item, mediaContentId);
-    const url = `/media-browser/browser/${encodeURIComponent(target)}`;
-    window.open(url, "_blank", "noopener");
-  }
-
-  _mediaBrowserTarget(item, mediaContentId) {
-    if (!mediaContentId.includes("FILE|")) {
-      return mediaContentId;
-    }
-
-    const parts = mediaContentId.split("|");
-    if (parts.length < 5) {
-      return mediaContentId;
-    }
-
-    const [, configEntryId, channel, stream] = parts;
-    const dt = new Date(item?.start_ts || Date.now());
-    const year = dt.getFullYear();
-    const month = dt.getMonth() + 1;
-    const day = dt.getDate();
-    const label = normalizeCardLabel(item?.label);
-    const eventByLabel = {
-      person: "PERSON",
-      pet: "PET",
-      vehicle: "VEHICLE",
-      motion: "MOTION",
-      visitor: "VISITOR",
-    };
-    const event = eventByLabel[label] || "PERSON";
-    return `media-source://reolink/EVE|${configEntryId}|${channel}|${stream}|${year}|${month}|${day}|${event}`;
   }
 
   _formatTime(ts) {
@@ -470,20 +419,6 @@ class ReolinkFeedCard extends HTMLElement {
     return "mp4";
   }
 
-  _decodeMaybeBase64(value) {
-    if (!value) return "";
-    try {
-      // Reolink media ids may contain base64-encoded file identifiers.
-      const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-      const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-      const decoded = atob(padded);
-      if (/[\u0000-\u0008\u000e-\u001f]/.test(decoded)) return value;
-      return decoded;
-    } catch (_err) {
-      return value;
-    }
-  }
-
   _isPlausibleFilename(name) {
     if (!name) return false;
     if (name.length < 3 || name.length > 255) return false;
@@ -500,18 +435,6 @@ class ReolinkFeedCard extends HTMLElement {
       const fromLocal = localUrl.split("?")[0].split("/").pop() || "";
       if (this._isPlausibleFilename(fromLocal)) return fromLocal;
     }
-    const mediaContentId = item?.recording?.media_content_id || "";
-    if (mediaContentId.includes("FILE|")) {
-      const parts = mediaContentId.split("|");
-      const raw = parts[parts.length - 1] || "";
-      const decodedRaw = decodeURIComponent(raw);
-      const maybeDecoded = this._decodeMaybeBase64(decodedRaw);
-      const candidate = String(maybeDecoded).split("/").pop() || "";
-      if (candidate) {
-        if (this._isPlausibleFilename(candidate)) return candidate;
-      }
-    }
-
     const dt = new Date(item?.start_ts || Date.now());
     const yyyy = dt.getFullYear();
     const mm = String(dt.getMonth() + 1).padStart(2, "0");
@@ -532,9 +455,7 @@ class ReolinkFeedCard extends HTMLElement {
     if (typeof localUrl === "string" && localUrl) {
       return localUrl;
     }
-    return `/media-browser/browser/${encodeURIComponent(
-      this._mediaBrowserTarget(item, item?.recording?.media_content_id || "")
-    )}`;
+    return "#";
   }
 
   _labelIcon(label) {
@@ -632,6 +553,12 @@ class ReolinkFeedCard extends HTMLElement {
     const infoItem = this._infoDialog.open
       ? this._items.find((item) => item.id === this._infoDialog.itemId) || null
       : null;
+    const infoFileHref = infoItem ? this._recordingLinkHref(infoItem) : "";
+    const infoFileName = infoItem ? this._recordingFilename(infoItem) : "";
+    const infoFileLinkHtml =
+      infoItem && infoFileHref && infoFileHref !== "#"
+        ? `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(infoItem)}">${infoFileName}</a>`
+        : `<span title="${infoItem ? this._mediaFileDisplayPath(infoItem) : ""}">${infoFileName}</span>`;
     const infoDialogHtml =
       this._infoDialog.open && infoItem
         ? `
@@ -656,12 +583,7 @@ class ReolinkFeedCard extends HTMLElement {
           </div>
           <div>
             <span><strong>${this._t("file")}:</strong> </span>
-            <a
-              href="${this._recordingLinkHref(infoItem)}"
-              target="_blank"
-              rel="noopener"
-              title="${this._mediaFileDisplayPath(infoItem)}"
-            >${this._recordingFilename(infoItem)}</a>
+            ${infoFileLinkHtml}
           </div>
         </div>
         <div class="info-actions">

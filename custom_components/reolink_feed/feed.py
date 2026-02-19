@@ -30,7 +30,6 @@ from homeassistant.util import slugify
 
 from .const import (
     CLEANUP_INTERVAL_SECONDS,
-    DEFAULT_CACHE_RECORDINGS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DEFAULT_MAX_DETECTIONS,
     DEFAULT_MAX_STORAGE_GB,
@@ -69,7 +68,6 @@ class ReolinkFeedManager:
         enabled_labels: set[str] | None = None,
         retention_hours: int | None = None,
         max_detections: int | None = None,
-        cache_recordings: bool = DEFAULT_CACHE_RECORDINGS,
         max_storage_gb: float | None = None,
     ) -> None:
         self.hass = hass
@@ -88,7 +86,6 @@ class ReolinkFeedManager:
         self._enabled_labels = self._normalize_enabled_labels(enabled_labels)
         self._retention_hours = self._normalize_retention_hours(retention_hours)
         self._max_detections = self._normalize_max_detections(max_detections)
-        self._cache_recordings = bool(cache_recordings)
         self._max_storage_gb = self._normalize_max_storage_gb(max_storage_gb)
         self._max_storage_bytes = int(self._max_storage_gb * 1024 * 1024 * 1024)
 
@@ -96,6 +93,8 @@ class ReolinkFeedManager:
         """Load initial state and begin listening."""
         self._items = await self._store.async_load()
         changed = self._normalize_item_labels()
+        if self._normalize_item_recordings():
+            changed = True
         if await self._async_migrate_snapshot_paths():
             changed = True
         if await self.async_prune_expired_items():
@@ -189,6 +188,17 @@ class ReolinkFeedManager:
             normalized = self._normalize_label(item.label)
             if normalized != item.label:
                 item.label = normalized
+                changed = True
+        return changed
+
+    def _normalize_item_recordings(self) -> bool:
+        changed = False
+        for item in self._items:
+            recording = item.recording or {}
+            if "media_content_id" in recording:
+                recording = dict(recording)
+                recording.pop("media_content_id", None)
+                item.recording = recording
                 changed = True
         return changed
 
@@ -370,8 +380,7 @@ class ReolinkFeedManager:
             if item.id in resolve_item_ids and item.end_ts is not None
         }
         await self._async_resolve_recordings_immediately(sorted(resolvable_ids))
-        if self._cache_recordings:
-            await self._async_cache_recordings_for_items(self._items)
+        await self._async_cache_recordings_for_items(self._items)
         await self._store.async_save(self._items)
         return {
             "entity_count": len(entity_ids),
@@ -552,36 +561,26 @@ class ReolinkFeedManager:
             raise ValueError(f"Unknown item id: {item_id}")
 
         recording = item.recording or {"status": "pending"}
-        if recording.get("status") == "linked":
-            if (
-                self._cache_recordings
-                and not recording.get("local_url")
-                and isinstance(recording.get("media_content_id"), str)
-            ):
-                local_url = await self._async_cache_recording_file(
-                    item, recording["media_content_id"]
-                )
-                if local_url:
-                    recording["local_url"] = local_url
-                    item.recording = recording
-                    self._schedule_save()
+        local_url = recording.get("local_url")
+        if recording.get("status") == "linked" and isinstance(local_url, str) and local_url:
             return recording
 
         media_content_id = await self._async_find_recording_media_content_id(item)
         if media_content_id:
-            local_url = None
-            if self._cache_recordings and item.end_ts is not None:
-                local_url = await self._async_cache_recording_file(item, media_content_id)
-            item.recording = {
-                "status": "linked",
-                "media_content_id": media_content_id,
-                "resolved_at": datetime.now().astimezone().isoformat(),
-            }
+            local_url = (
+                await self._async_cache_recording_file(item, media_content_id)
+                if item.end_ts is not None
+                else None
+            )
             if local_url:
-                item.recording["local_url"] = local_url
-            self._cancel_recording_resolution(item.id)
-            self._schedule_save()
-            return item.recording
+                item.recording = {
+                    "status": "linked",
+                    "local_url": local_url,
+                    "resolved_at": datetime.now().astimezone().isoformat(),
+                }
+                self._cancel_recording_resolution(item.id)
+                self._schedule_save()
+                return item.recording
 
         if final_attempt:
             item.recording = {"status": "not_found"}
@@ -772,20 +771,13 @@ class ReolinkFeedManager:
         semaphore = asyncio.Semaphore(2)
 
         async def _cache_one(item: DetectionItem) -> None:
-            recording = item.recording or {}
-            if recording.get("status") != "linked":
+            if item.end_ts is None:
                 return
+            recording = item.recording or {}
             if recording.get("local_url"):
                 return
-            media_content_id = recording.get("media_content_id")
-            if not media_content_id:
-                return
             async with semaphore:
-                local_url = await self._async_cache_recording_file(item, media_content_id)
-                if not local_url:
-                    return
-                recording["local_url"] = local_url
-                item.recording = recording
+                await self.async_resolve_recording(item.id, final_attempt=True)
 
         await asyncio.gather(*[_cache_one(item) for item in items])
 

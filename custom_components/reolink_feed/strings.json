@@ -17,8 +17,7 @@
         "title": "Reolink Feed options",
         "data": {
           "enabled_labels": "Enabled detections",
-          "rebuild_now": "Rebuild feed now",
-          "cache_recordings": "Cache recordings locally"
+          "rebuild_now": "Rebuild feed now"
         },
         "sections": {
           "retention_policy": {

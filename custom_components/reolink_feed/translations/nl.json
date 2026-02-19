@@ -17,8 +17,7 @@
         "title": "Reolink Feed-opties",
         "data": {
           "enabled_labels": "Ingeschakelde detecties",
-          "rebuild_now": "Feed nu opnieuw opbouwen",
-          "cache_recordings": "Opnames lokaal cachen"
+          "rebuild_now": "Feed nu opnieuw opbouwen"
         },
         "sections": {
           "retention_policy": {

@@ -28,12 +28,10 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CARD_FILENAME,
     CARD_URL_PATH,
-    CONF_CACHE_RECORDINGS,
     CONF_ENABLED_LABELS,
     CONF_MAX_DETECTIONS,
     CONF_MAX_STORAGE_GB,
     CONF_RETENTION_HOURS,
-    DEFAULT_CACHE_RECORDINGS,
     DEFAULT_RETENTION_HOURS,
     DEFAULT_MAX_STORAGE_GB,
     DEFAULT_MAX_DETECTIONS,
@@ -78,7 +76,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
         _enabled_labels_from_entry(entry),
         _retention_hours_from_entry(entry),
         _max_detections_from_entry(entry),
-        _cache_recordings_from_entry(entry),
         _max_storage_gb_from_entry(entry),
     )
     await manager.async_start()
@@ -406,10 +403,6 @@ def _max_detections_from_entry(entry: ReolinkFeedConfigEntry) -> int:
     return max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, value))
 
 
-def _cache_recordings_from_entry(entry: ReolinkFeedConfigEntry) -> bool:
-    return bool(entry.options.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS))
-
-
 def _max_storage_gb_from_entry(entry: ReolinkFeedConfigEntry) -> float:
     raw = entry.options.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB)
     try:
@@ -417,4 +410,3 @@ def _max_storage_gb_from_entry(entry: ReolinkFeedConfigEntry) -> float:
     except (TypeError, ValueError):
         value = DEFAULT_MAX_STORAGE_GB
     return max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, value))
-    DEFAULT_CACHE_RECORDINGS,

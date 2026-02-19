@@ -9,13 +9,11 @@ from homeassistant.helpers import selector
 import voluptuous as vol
 
 from .const import (
-    CONF_CACHE_RECORDINGS,
     CONF_ENABLED_LABELS,
     CONF_MAX_DETECTIONS,
     CONF_MAX_STORAGE_GB,
     CONF_REBUILD_NOW,
     CONF_RETENTION_HOURS,
-    DEFAULT_CACHE_RECORDINGS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DEFAULT_MAX_DETECTIONS,
     DEFAULT_MAX_STORAGE_GB,
@@ -92,9 +90,6 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             max_detections = int(merged_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS))
             max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
             rebuild_now = bool(merged_input.get(CONF_REBUILD_NOW, False))
-            cache_recordings = bool(
-                merged_input.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS)
-            )
             max_storage_gb = float(merged_input.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB))
             max_storage_gb = max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, max_storage_gb))
             if rebuild_now:
@@ -116,7 +111,6 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
                     CONF_ENABLED_LABELS: selected,
                     CONF_RETENTION_HOURS: retention_hours,
                     CONF_MAX_DETECTIONS: max_detections,
-                    CONF_CACHE_RECORDINGS: cache_recordings,
                     CONF_MAX_STORAGE_GB: max_storage_gb,
                 },
             )
@@ -136,9 +130,6 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             self._config_entry.options.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS)
         )
         max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
-        cache_recordings = bool(
-            self._config_entry.options.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS)
-        )
         max_storage_gb = float(
             self._config_entry.options.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB)
         )
@@ -178,9 +169,6 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(CONF_ENABLED_LABELS, default=default_labels): cv.multi_select(
                         self._label_options()
                     ),
-                    vol.Required(
-                        CONF_CACHE_RECORDINGS, default=cache_recordings
-                    ): selector.BooleanSelector(),
                     vol.Optional(CONF_REBUILD_NOW, default=False): selector.BooleanSelector(),
                     vol.Optional(SECTION_RETENTION_POLICY): section(
                         vol.Schema(retention_section_schema),
