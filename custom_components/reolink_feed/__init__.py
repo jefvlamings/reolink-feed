@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 import json
 import logging
 from pathlib import Path
@@ -24,7 +25,17 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
-from .const import CARD_FILENAME, CARD_URL_PATH, DOMAIN, LIST_ITEMS_LIMIT, RETENTION_HOURS
+from .const import (
+    CARD_FILENAME,
+    CARD_URL_PATH,
+    CONF_ENABLED_LABELS,
+    DEFAULT_ENABLED_DETECTION_LABELS,
+    DOMAIN,
+    LEGACY_LABEL_ALIASES,
+    LIST_ITEMS_LIMIT,
+    RETENTION_HOURS,
+    SUPPORTED_DETECTION_LABELS,
+)
 from .feed import ReolinkFeedManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,6 +47,7 @@ class ReolinkFeedData:
     """Runtime data stored on the config entry."""
 
     manager: ReolinkFeedManager
+    options_unsub: Callable[[], None] | None = None
 
 
 ReolinkFeedConfigEntry = ConfigEntry[ReolinkFeedData]
@@ -48,9 +60,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) -> bool:
     """Set up Reolink feed from a config entry."""
-    manager = ReolinkFeedManager(hass)
+    manager = ReolinkFeedManager(hass, _enabled_labels_from_entry(entry))
     await manager.async_start()
-    entry.runtime_data = ReolinkFeedData(manager=manager)
+    options_unsub = entry.add_update_listener(_async_reload_entry_on_update)
+    entry.runtime_data = ReolinkFeedData(manager=manager, options_unsub=options_unsub)
     await _async_register_card_resource(hass)
     await _async_ensure_lovelace_card_resource(hass)
     _async_register_ws_commands(hass)
@@ -60,10 +73,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) -> bool:
     """Unload the config entry."""
+    if entry.runtime_data.options_unsub:
+        entry.runtime_data.options_unsub()
     await entry.runtime_data.manager.async_stop()
     if not hass.config_entries.async_entries(DOMAIN):
         hass.services.async_remove(DOMAIN, "mock_detection")
     return True
+
+
+async def _async_reload_entry_on_update(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) -> None:
+    """Reload config entry when options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _async_register_card_resource(hass: HomeAssistant) -> None:
@@ -176,7 +196,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         await entry.runtime_data.manager.async_create_mock_detection(
             source_entity_id=call.data[CONF_ENTITY_ID],
             camera_name=call.data["camera_name"],
-            label=call.data["label"],
+            label=_normalize_label(call.data["label"]),
             duration_s=call.data["duration_s"],
             create_dummy_snapshot=call.data["create_dummy_snapshot"],
         )
@@ -189,7 +209,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
             {
                 vol.Required(CONF_ENTITY_ID): cv.entity_id,
                 vol.Required("camera_name"): cv.string,
-                vol.Optional("label", default="person"): vol.In(["person", "animal"]),
+                vol.Optional("label", default="person"): vol.In(
+                    list(SUPPORTED_DETECTION_LABELS) + list(LEGACY_LABEL_ALIASES)
+                ),
                 vol.Optional("duration_s", default=8): cv.positive_int,
                 vol.Optional("create_dummy_snapshot", default=True): cv.boolean,
             }
@@ -200,7 +222,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
 @websocket_api.websocket_command(
     {
         "type": "reolink_feed/list",
-        vol.Optional("labels", default=["person", "animal"]): [cv.string],
+        vol.Optional("labels"): [cv.string],
     }
 )
 @websocket_api.async_response
@@ -218,7 +240,13 @@ async def ws_list_items(
     await entry.runtime_data.manager.async_prune_expired_items()
     items = entry.runtime_data.manager.get_items()
 
-    labels = set(msg["labels"])
+    enabled_labels = entry.runtime_data.manager.get_enabled_labels()
+    requested = {
+        _normalize_label(label)
+        for label in (msg.get("labels") or [])
+        if _normalize_label(label) in SUPPORTED_DETECTION_LABELS
+    }
+    labels = requested or enabled_labels
 
     now_ts = dt_util.utcnow().timestamp()
     since_seconds = RETENTION_HOURS * 3600
@@ -232,7 +260,13 @@ async def ws_list_items(
         if len(filtered) >= LIST_ITEMS_LIMIT:
             break
 
-    connection.send_result(msg["id"], {"items": filtered})
+    connection.send_result(
+        msg["id"],
+        {
+            "items": filtered,
+            "enabled_labels": sorted(enabled_labels),
+        },
+    )
 
 
 @websocket_api.websocket_command(
@@ -313,3 +347,21 @@ async def ws_delete_item(
         return
 
     connection.send_result(msg["id"], {"ok": True})
+
+
+def _normalize_label(label: str) -> str:
+    lowered = str(label).strip().lower()
+    return LEGACY_LABEL_ALIASES.get(lowered, lowered)
+
+
+def _enabled_labels_from_entry(entry: ReolinkFeedConfigEntry) -> set[str]:
+    raw = entry.options.get(CONF_ENABLED_LABELS)
+    selected: list[str]
+    if isinstance(raw, list):
+        selected = [_normalize_label(value) for value in raw]
+    else:
+        selected = list(DEFAULT_ENABLED_DETECTION_LABELS)
+    normalized = {value for value in selected if value in SUPPORTED_DETECTION_LABELS}
+    if not normalized:
+        return set(DEFAULT_ENABLED_DETECTION_LABELS)
+    return normalized

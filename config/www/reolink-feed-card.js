@@ -1,7 +1,18 @@
+const SUPPORTED_CARD_LABELS = ["person", "pet", "vehicle", "motion", "visitor"];
+const LEGACY_CARD_LABEL_ALIASES = { animal: "pet" };
+
+function normalizeCardLabel(label) {
+  const lowered = String(label || "").toLowerCase().trim();
+  return LEGACY_CARD_LABEL_ALIASES[lowered] || lowered;
+}
+
 const CARD_I18N = {
   en: {
     person: "Person",
-    animal: "Animal",
+    pet: "Pet",
+    vehicle: "Vehicle",
+    motion: "Motion",
+    visitor: "Visitor",
     detection_info: "Detection info",
     no_snapshot: "No snapshot",
     camera: "Camera",
@@ -31,7 +42,10 @@ const CARD_I18N = {
   },
   nl: {
     person: "Persoon",
-    animal: "Dier",
+    pet: "Huisdier",
+    vehicle: "Voertuig",
+    motion: "Beweging",
+    visitor: "Bezoeker",
     detection_info: "Detectie-info",
     no_snapshot: "Geen snapshot",
     camera: "Camera",
@@ -73,7 +87,10 @@ class ReolinkFeedCard extends HTMLElement {
     this._resolvingIds = new Set();
     this._rebuilding = false;
     this._page = 1;
-    this._activeLabels = new Set(["person", "animal"]);
+    this._availableLabels = [...SUPPORTED_CARD_LABELS];
+    this._activeLabels = new Set();
+    this._configuredLabels = [];
+    this._filtersInitialized = false;
     this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this._infoDialog = { open: false, itemId: "" };
     this.attachShadow({ mode: "open" });
@@ -81,16 +98,20 @@ class ReolinkFeedCard extends HTMLElement {
 
   setConfig(config) {
     this._config = {
-      labels: ["person", "animal"],
+      labels: [],
       cameras: [],
       per_entity_changes: 400,
       page_size: 20,
       ...config,
     };
     const configuredLabels = Array.isArray(this._config.labels)
-      ? this._config.labels.filter((label) => label === "person" || label === "animal")
-      : ["person", "animal"];
-    this._activeLabels = new Set(configuredLabels.length ? configuredLabels : ["person", "animal"]);
+      ? this._config.labels
+          .map((label) => normalizeCardLabel(label))
+          .filter((label) => SUPPORTED_CARD_LABELS.includes(label))
+      : [];
+    this._configuredLabels = configuredLabels;
+    this._activeLabels = new Set(configuredLabels);
+    this._filtersInitialized = false;
     this._render();
     this._loadItems();
   }
@@ -130,13 +151,27 @@ class ReolinkFeedCard extends HTMLElement {
   }
 
   _labelText(label) {
-    return label === "animal" ? this._t("animal") : this._t("person");
+    const normalized = normalizeCardLabel(label);
+    if (SUPPORTED_CARD_LABELS.includes(normalized)) {
+      return this._t(normalized);
+    }
+    return normalized ? normalized.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "-";
+  }
+
+  _labelIconName(label) {
+    const normalized = normalizeCardLabel(label);
+    if (normalized === "pet") return "mdi:dog-side";
+    if (normalized === "vehicle") return "mdi:car";
+    if (normalized === "motion") return "mdi:motion-sensor";
+    if (normalized === "visitor") return "mdi:account-arrow-right";
+    return "mdi:account";
   }
 
   _applyFilters() {
     const cameraFilter = new Set((this._config?.cameras || []).map((v) => String(v).toLowerCase()));
     this._filteredItems = this._items.filter((item) => {
-      if (!this._activeLabels.has(item.label)) return false;
+      const label = normalizeCardLabel(item.label);
+      if (!this._activeLabels.has(label)) return false;
       if (!cameraFilter.size) return true;
       return cameraFilter.has(String(item.camera_name || "").toLowerCase());
     });
@@ -183,9 +218,28 @@ class ReolinkFeedCard extends HTMLElement {
     try {
       const result = await this._hass.callWS({
         type: "reolink_feed/list",
-        labels: ["person", "animal"],
       });
-      this._items = result.items || [];
+      const enabledLabels = Array.isArray(result?.enabled_labels)
+        ? result.enabled_labels
+            .map((label) => normalizeCardLabel(label))
+            .filter((label) => SUPPORTED_CARD_LABELS.includes(label))
+        : [...SUPPORTED_CARD_LABELS];
+      this._availableLabels = [...new Set(enabledLabels)];
+      if (!this._filtersInitialized) {
+        const initial =
+          this._configuredLabels.length > 0
+            ? this._configuredLabels.filter((label) => this._availableLabels.includes(label))
+            : [...this._availableLabels];
+        this._activeLabels = new Set(initial);
+        this._filtersInitialized = true;
+      } else {
+        const allowed = new Set(this._availableLabels);
+        this._activeLabels = new Set([...this._activeLabels].filter((label) => allowed.has(label)));
+      }
+      this._items = (result.items || []).map((item) => ({
+        ...item,
+        label: normalizeCardLabel(item.label),
+      }));
       this._applyFilters();
     } catch (err) {
       this._error = err?.message || String(err);
@@ -279,7 +333,7 @@ class ReolinkFeedCard extends HTMLElement {
         return;
       }
       this._openModal(
-        `${item.camera_name} · ${item.label}`,
+        `${item.camera_name} · ${this._labelText(item.label)}`,
         resolved.url,
         resolved.mime_type || "video/mp4",
         "video"
@@ -361,7 +415,15 @@ class ReolinkFeedCard extends HTMLElement {
     const year = dt.getFullYear();
     const month = dt.getMonth() + 1;
     const day = dt.getDate();
-    const event = item?.label === "animal" ? "ANIMAL" : "PERSON";
+    const label = normalizeCardLabel(item?.label);
+    const eventByLabel = {
+      person: "PERSON",
+      pet: "PET",
+      vehicle: "VEHICLE",
+      motion: "MOTION",
+      visitor: "VISITOR",
+    };
+    const event = eventByLabel[label] || "PERSON";
     return `media-source://reolink/EVE|${configEntryId}|${channel}|${stream}|${year}|${month}|${day}|${event}`;
   }
 
@@ -404,23 +466,25 @@ class ReolinkFeedCard extends HTMLElement {
     const year = dt.getFullYear();
     const month = String(dt.getMonth() + 1).padStart(2, "0");
     const day = String(dt.getDate()).padStart(2, "0");
-    const labelTitle = item?.label === "animal" ? "Animal" : "Person";
+    const label = normalizeCardLabel(item?.label);
+    const labelTitleByLabel = {
+      person: "Person",
+      pet: "Pet",
+      vehicle: "Vehicle",
+      motion: "Motion",
+      visitor: "Visitor",
+    };
+    const labelTitle = labelTitleByLabel[label] || "Person";
     const camera = item?.camera_name || "Camera";
     return `/Reolink/${camera}/Low Resolution/${year}-${month}-${day}/${labelTitle}`;
   }
 
   _labelIcon(label) {
+    const icon = this._labelIconName(label);
     const labelText = this._labelText(label);
-    if (label === "animal") {
-      return `
-        <span class="label-icon animal" title="${labelText}" aria-label="${labelText}">
-          <ha-icon icon="mdi:dog-side"></ha-icon>
-        </span>
-      `;
-    }
     return `
-      <span class="label-icon person" title="${labelText}" aria-label="${labelText}">
-        <ha-icon icon="mdi:account"></ha-icon>
+      <span class="label-icon" title="${labelText}" aria-label="${labelText}">
+        <ha-icon icon="${icon}"></ha-icon>
       </span>
     `;
   }
@@ -432,8 +496,18 @@ class ReolinkFeedCard extends HTMLElement {
 
     const pagedItems = this._pagedItems();
     const totalPages = this._totalPages();
-    const personActive = this._activeLabels.has("person");
-    const animalActive = this._activeLabels.has("animal");
+    const filterPills = this._availableLabels
+      .map((label) => {
+        const active = this._activeLabels.has(label);
+        const icon = this._labelIconName(label);
+        return `
+            <button class="filter-pill${active ? " active" : ""}" data-filter-label="${label}" aria-pressed="${active ? "true" : "false"}">
+              <ha-icon icon="${icon}"></ha-icon>
+              <span>${this._labelText(label)}</span>
+            </button>
+        `;
+      })
+      .join("");
     const listHtml = pagedItems
       .map((item) => {
         const image = item.snapshot_url
@@ -613,14 +687,7 @@ class ReolinkFeedCard extends HTMLElement {
       <ha-card>
         <div class="topbar">
           <div class="filters">
-            <button class="filter-pill${personActive ? " active" : ""}" data-filter-label="person" aria-pressed="${personActive ? "true" : "false"}">
-              <ha-icon icon="mdi:account"></ha-icon>
-              <span>${this._t("person")}</span>
-            </button>
-            <button class="filter-pill${animalActive ? " active" : ""}" data-filter-label="animal" aria-pressed="${animalActive ? "true" : "false"}">
-              <ha-icon icon="mdi:dog-side"></ha-icon>
-              <span>${this._t("animal")}</span>
-            </button>
+            ${filterPills}
           </div>
           <div class="actions">
             <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="${this._t("reset_feed_from_history")}">
@@ -673,8 +740,8 @@ class ReolinkFeedCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".filter-pill").forEach((el) => {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
-        const label = el.getAttribute("data-filter-label");
-        if (label !== "person" && label !== "animal") return;
+        const label = normalizeCardLabel(el.getAttribute("data-filter-label"));
+        if (!SUPPORTED_CARD_LABELS.includes(label)) return;
         this._toggleLabelFilter(label);
       });
     });
@@ -741,7 +808,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "reolink-feed-card",
   name: "Reolink Feed Card",
-  description: "Timeline of Reolink person/animal detections",
+  description: "Timeline of Reolink detections",
 });
 
 class ReolinkFeedCardEditor extends HTMLElement {
@@ -793,7 +860,7 @@ class ReolinkFeedCardEditor extends HTMLElement {
   }
 
   _onLabelToggle(label, checked) {
-    const current = Array.isArray(this._config.labels) ? this._config.labels : ["person", "animal"];
+    const current = Array.isArray(this._config.labels) ? this._config.labels : [];
     const labels = new Set(current);
     if (checked) labels.add(label);
     else labels.delete(label);
@@ -804,7 +871,15 @@ class ReolinkFeedCardEditor extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const pageSize = Number(this._config?.page_size ?? 20);
-    const labels = new Set(Array.isArray(this._config?.labels) ? this._config.labels : ["person", "animal"]);
+    const labels = new Set(
+      (Array.isArray(this._config?.labels) ? this._config.labels : [])
+        .map((label) => normalizeCardLabel(label))
+        .filter((label) => SUPPORTED_CARD_LABELS.includes(label))
+    );
+    const labelsHtml = SUPPORTED_CARD_LABELS.map(
+      (label) =>
+        `<label><input id="label_${label}" type="checkbox" ${labels.has(label) ? "checked" : ""} />${this._t(label)}</label>`
+    ).join("");
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
@@ -830,8 +905,7 @@ class ReolinkFeedCardEditor extends HTMLElement {
         <div class="field">
           <label>${this._t("labels")}</label>
           <div class="labels">
-            <label><input id="label_person" type="checkbox" ${labels.has("person") ? "checked" : ""} />${this._t("person")}</label>
-            <label><input id="label_animal" type="checkbox" ${labels.has("animal") ? "checked" : ""} />${this._t("animal")}</label>
+            ${labelsHtml}
           </div>
         </div>
       </div>
@@ -840,12 +914,11 @@ class ReolinkFeedCardEditor extends HTMLElement {
     this.shadowRoot.querySelector("#page_size")?.addEventListener("change", (ev) => {
       this._onNumberChange("page_size", ev.target.value, 20);
     });
-    this.shadowRoot.querySelector("#label_person")?.addEventListener("change", (ev) => {
-      this._onLabelToggle("person", ev.target.checked);
-    });
-    this.shadowRoot.querySelector("#label_animal")?.addEventListener("change", (ev) => {
-      this._onLabelToggle("animal", ev.target.checked);
-    });
+    for (const label of SUPPORTED_CARD_LABELS) {
+      this.shadowRoot.querySelector(`#label_${label}`)?.addEventListener("change", (ev) => {
+        this._onLabelToggle(label, ev.target.checked);
+      });
+    }
   }
 }
 

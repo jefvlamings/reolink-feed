@@ -25,6 +25,8 @@ from homeassistant.util import slugify
 
 from .const import (
     CLEANUP_INTERVAL_SECONDS,
+    DEFAULT_ENABLED_DETECTION_LABELS,
+    LEGACY_LABEL_ALIASES,
     MAX_ITEMS,
     MERGE_WINDOW_SECONDS,
     RETENTION_HOURS,
@@ -33,6 +35,7 @@ from .const import (
     RECORDING_WINDOW_END_PAD_SECONDS,
     RECORDING_WINDOW_START_PAD_SECONDS,
     SNAPSHOT_DELAY_SECONDS,
+    SUPPORTED_DETECTION_LABELS,
     SUPPORTED_SUFFIX_TO_LABEL,
 )
 from .models import DetectionItem
@@ -47,7 +50,7 @@ _CLIP_TITLE_PATTERN = re.compile(
 class ReolinkFeedManager:
     """Manage detection lifecycle and persistence."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, enabled_labels: set[str] | None = None) -> None:
         self.hass = hass
         self._store = DetectionStore(hass)
         self._www_root = Path(hass.config.path("www"))
@@ -61,11 +64,14 @@ class ReolinkFeedManager:
         self._unsub_state_changed: Callable[[], None] | None = None
         self._unsub_delayed_save: Callable[[], None] | None = None
         self._unsub_cleanup_timer: Callable[[], None] | None = None
+        self._enabled_labels = self._normalize_enabled_labels(enabled_labels)
 
     async def async_start(self) -> None:
         """Load initial state and begin listening."""
         self._items = await self._store.async_load()
-        changed = await self._async_migrate_snapshot_paths()
+        changed = self._normalize_item_labels()
+        if await self._async_migrate_snapshot_paths():
+            changed = True
         if await self.async_prune_expired_items():
             changed = True
         self._rebuild_indexes()
@@ -75,6 +81,15 @@ class ReolinkFeedManager:
         self._schedule_cleanup()
         if changed:
             await self._store.async_save(self._items)
+
+    def _normalize_item_labels(self) -> bool:
+        changed = False
+        for item in self._items:
+            normalized = self._normalize_label(item.label)
+            if normalized != item.label:
+                item.label = normalized
+                changed = True
+        return changed
 
     async def async_stop(self) -> None:
         """Stop listeners and flush any pending save."""
@@ -99,6 +114,24 @@ class ReolinkFeedManager:
     def get_items(self) -> list[DetectionItem]:
         """Return newest-first feed items."""
         return self._items
+
+    def get_enabled_labels(self) -> set[str]:
+        """Return backend-enabled detection labels."""
+        return set(self._enabled_labels)
+
+    def _normalize_enabled_labels(self, enabled_labels: set[str] | None) -> set[str]:
+        if not enabled_labels:
+            return set(DEFAULT_ENABLED_DETECTION_LABELS)
+        normalized = {self._normalize_label(label) for label in enabled_labels}
+        normalized = {label for label in normalized if label in SUPPORTED_DETECTION_LABELS}
+        return normalized or set(DEFAULT_ENABLED_DETECTION_LABELS)
+
+    def _normalize_label(self, label: str | None) -> str:
+        lowered = str(label or "").strip().lower()
+        return LEGACY_LABEL_ALIASES.get(lowered, lowered)
+
+    def _label_is_enabled(self, label: str | None) -> bool:
+        return self._normalize_label(label) in self._enabled_labels
 
     async def async_migrate_legacy_snapshot_urls(self) -> bool:
         """Public migration trigger for legacy snapshot URLs."""
@@ -174,7 +207,7 @@ class ReolinkFeedManager:
     async def async_rebuild_from_history(
         self, *, per_entity_changes: int = 400
     ) -> dict[str, int]:
-        """Rebuild items from Reolink person/animal binary sensor history."""
+        """Rebuild items from Reolink detection binary sensor history."""
         entity_ids = self._collect_reolink_detection_entities()
         rebuilt = await self._build_items_from_history(entity_ids, per_entity_changes)
         merged, added_count, merged_count, resolve_item_ids = _merge_rebuilt_with_existing_items(
@@ -218,7 +251,7 @@ class ReolinkFeedManager:
             return
 
         label = self._resolve_detection_label(entity_id)
-        if label is None:
+        if label is None or not self._label_is_enabled(label):
             return
 
         old_state = data.get("old_state")
@@ -324,6 +357,12 @@ class ReolinkFeedManager:
         create_dummy_snapshot: bool = True,
     ) -> DetectionItem:
         """Create a synthetic detection for local development/testing."""
+        normalized_label = self._normalize_label(label)
+        if normalized_label not in SUPPORTED_DETECTION_LABELS:
+            raise ValueError(f"Unsupported label: {label}")
+        if not self._label_is_enabled(normalized_label):
+            raise ValueError(f"Label is disabled by options: {normalized_label}")
+
         ended = datetime.now().astimezone()
         started = ended - timedelta(seconds=max(1, duration_s))
         item = DetectionItem(
@@ -331,7 +370,7 @@ class ReolinkFeedManager:
             start_ts=started.isoformat(),
             end_ts=ended.isoformat(),
             duration_s=max(1, duration_s),
-            label=label,
+            label=normalized_label,
             source_entity_id=source_entity_id,
             camera_name=camera_name,
             snapshot_url=None,
@@ -459,7 +498,8 @@ class ReolinkFeedManager:
         self._schedule_save()
 
     async def _async_find_recording_media_content_id(self, item: DetectionItem) -> str | None:
-        if item.label not in {"person", "animal"}:
+        label_title = _recording_label_title(item.label)
+        if label_title is None:
             return None
 
         # Reolink clip titles are wall-clock times in local camera timezone.
@@ -474,8 +514,6 @@ class ReolinkFeedManager:
             end_dt.date(),
             window_end.date(),
         }
-        label_title = "Person" if item.label == "person" else "Animal"
-
         try:
             root = await async_browse_media(self.hass, "media-source://reolink")
         except BrowseError:
@@ -645,20 +683,19 @@ class ReolinkFeedManager:
         if entry is not None:
             # Reolink translation keys / unique IDs are stable across HA UI languages.
             translation_key = (entry.translation_key or "").lower()
-            if translation_key == "person":
-                self._label_by_sensor[entity_id] = "person"
-                return "person"
-            if translation_key in {"animal", "pet"}:
-                self._label_by_sensor[entity_id] = "animal"
-                return "animal"
+            if translation_key in SUPPORTED_DETECTION_LABELS:
+                self._label_by_sensor[entity_id] = translation_key
+                return translation_key
+            normalized_key = self._normalize_label(translation_key)
+            if normalized_key in SUPPORTED_DETECTION_LABELS:
+                self._label_by_sensor[entity_id] = normalized_key
+                return normalized_key
 
             unique_id = (entry.unique_id or "").lower()
-            if unique_id.endswith("_person"):
-                self._label_by_sensor[entity_id] = "person"
-                return "person"
-            if unique_id.endswith("_pet") or unique_id.endswith("_animal"):
-                self._label_by_sensor[entity_id] = "animal"
-                return "animal"
+            for suffix, mapped_label in SUPPORTED_SUFFIX_TO_LABEL.items():
+                if unique_id.endswith(suffix):
+                    self._label_by_sensor[entity_id] = mapped_label
+                    return mapped_label
 
         # Fallback for setups where registry metadata is missing.
         object_id = entity_id.split(".", 1)[1].lower()
@@ -709,7 +746,7 @@ class ReolinkFeedManager:
                 if entity.disabled_by is not None:
                     continue
                 label = self._resolve_detection_label(entity.entity_id)
-                if label not in {"person", "animal"}:
+                if not self._label_is_enabled(label):
                     continue
                 if entity.entity_id in seen:
                     continue
@@ -728,7 +765,7 @@ class ReolinkFeedManager:
             if (entity.platform or "").lower() != "reolink":
                 continue
             label = self._resolve_detection_label(entity.entity_id)
-            if label not in {"person", "animal"}:
+            if not self._label_is_enabled(label):
                 continue
             if entity.entity_id in seen:
                 continue
@@ -754,7 +791,7 @@ class ReolinkFeedManager:
 
         for entity_id in entity_ids:
             label = self._resolve_detection_label(entity_id)
-            if label not in {"person", "animal"}:
+            if not self._label_is_enabled(label):
                 continue
 
             try:
@@ -1140,6 +1177,17 @@ def _overlap_seconds(
     return max(0.0, (end - start).total_seconds())
 
 
+def _recording_label_title(label: str) -> str | None:
+    mapping = {
+        "person": "Person",
+        "pet": "Pet",
+        "vehicle": "Vehicle",
+        "motion": "Motion",
+        "visitor": "Visitor",
+    }
+    return mapping.get(label)
+
+
 def _select_camera_node(children: list[Any], camera_name: str) -> Any | None:
     target = camera_name.strip().lower()
     best: tuple[int, Any] | None = None
@@ -1212,7 +1260,19 @@ def _parse_day_from_media_node(node: Any) -> date | None:
 def _camera_name_from_state(entity_id: str, friendly_name: str | None) -> str:
     if friendly_name:
         normalized = friendly_name.strip()
-        for suffix in (" persoon", " dier", " person", " animal"):
+        for suffix in (
+            " persoon",
+            " dier",
+            " bezoeker",
+            " voertuig",
+            " beweging",
+            " person",
+            " animal",
+            " pet",
+            " visitor",
+            " vehicle",
+            " motion",
+        ):
             if normalized.lower().endswith(suffix):
                 return normalized[: -len(suffix)].strip()
         return normalized

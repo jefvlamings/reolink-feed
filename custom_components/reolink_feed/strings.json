@@ -10,5 +10,15 @@
     "abort": {
       "single_instance_allowed": "Only a single Reolink Feed instance is allowed."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Reolink Feed options",
+        "data": {
+          "enabled_labels": "Enabled detection labels"
+        }
+      }
+    }
   }
 }
