@@ -84,7 +84,6 @@ class ReolinkFeedCard extends HTMLElement {
     this._activeLabels = new Set();
     this._configuredLabels = [];
     this._filtersInitialized = false;
-    this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
     this._infoDialog = { open: false, itemId: "" };
     this.attachShadow({ mode: "open" });
   }
@@ -211,9 +210,7 @@ class ReolinkFeedCard extends HTMLElement {
     }
     this._loading = true;
     this._error = null;
-    if (!this._modal?.open) {
-      this._render();
-    }
+    this._render();
     try {
       const result = await this._hass.callWS({
         type: "reolink_feed/list",
@@ -244,9 +241,7 @@ class ReolinkFeedCard extends HTMLElement {
       this._error = err?.message || String(err);
     } finally {
       this._loading = false;
-      if (!this._modal?.open) {
-        this._render();
-      }
+      this._render();
     }
   }
 
@@ -280,47 +275,8 @@ class ReolinkFeedCard extends HTMLElement {
   }
 
   async _openFromThumbnail(item) {
-    if (!this._hass) return;
-    const localUrl = item?.recording?.local_url;
-    if (localUrl) {
-      this._openModal(
-        `${item.camera_name} · ${this._labelText(item.label)}`,
-        localUrl,
-        "video/mp4",
-        "video"
-      );
-      return;
-    }
-    const recording = await this._refreshRecording(item, false, false);
-    if (!recording || recording.status !== "linked" || !recording.local_url) {
-      if (item?.snapshot_url) {
-        this._openModal(
-          `${item.camera_name} · snapshot`,
-          item.snapshot_url,
-          "image/jpeg",
-          "image"
-        );
-        return;
-      }
-      this._showToast("Clip not ready yet");
-      return;
-    }
-    this._openModal(
-      `${item.camera_name} · ${this._labelText(item.label)}`,
-      recording.local_url,
-      "video/mp4",
-      "video"
-    );
-  }
-
-  _openModal(title, url, mime, kind = "video") {
-    this._modal = { open: true, title, url, mime, kind };
-    this._render();
-  }
-
-  _closeModal() {
-    this._modal = { open: false, title: "", url: "", mime: "", kind: "video" };
-    this._render();
+    if (!item?.id) return;
+    this._openInfoDialog(item);
   }
 
   _openInfoDialog(item) {
@@ -492,7 +448,6 @@ class ReolinkFeedCard extends HTMLElement {
         const image = item.snapshot_url
           ? `<img src="${item.snapshot_url}" alt="${item.camera_name}" loading="lazy" />`
           : `<div class="placeholder">${this._t("no_snapshot")}</div>`;
-        const resolving = this._resolvingIds.has(item.id) ? " resolving" : "";
 
         return `
           <li class="item" data-id="${item.id}">
@@ -501,18 +456,8 @@ class ReolinkFeedCard extends HTMLElement {
               <span class="overlay top-left">
                 ${this._labelIcon(item.label)}
               </span>
-              <span class="overlay top-right">
-                <span class="info-trigger" role="button" tabindex="0" aria-label="${this._t("show_detection_info")}" title="${this._t("show_detection_info")}">
-                  <ha-icon icon="mdi:information-outline"></ha-icon>
-                </span>
-              </span>
               <span class="overlay bottom-left">
                 <span class="line2">${this._formatTime(item.start_ts)} (${this._formatDuration(item.duration_s)})</span>
-              </span>
-              <span class="play-overlay" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z"></path>
-                </svg>
               </span>
             </button>
           </li>
@@ -530,26 +475,6 @@ class ReolinkFeedCard extends HTMLElement {
       `
         : "";
 
-    const modalHtml = this._modal.open
-      ? `
-      <div class="modal-backdrop" data-close="1">
-        <div class="modal" role="dialog" aria-modal="true" aria-label="${this._t("recording_preview")}">
-          <div class="modal-head">
-            <span>${this._modal.title}</span>
-            <button class="close" data-close="1" aria-label="${this._t("close")}">✕</button>
-          </div>
-          <div class="modal-body">
-            ${
-              this._modal.kind === "image"
-                ? `<img src="${this._modal.url}" alt="${this._modal.title}" />`
-                : `<video controls autoplay playsinline src="${this._modal.url}"></video>`
-            }
-          </div>
-        </div>
-      </div>
-      `
-      : "";
-
     const infoItem = this._infoDialog.open
       ? this._items.find((item) => item.id === this._infoDialog.itemId) || null
       : null;
@@ -559,6 +484,12 @@ class ReolinkFeedCard extends HTMLElement {
       infoItem && infoFileHref && infoFileHref !== "#"
         ? `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(infoItem)}">${infoFileName}</a>`
         : `<span title="${infoItem ? this._mediaFileDisplayPath(infoItem) : ""}">${infoFileName}</span>`;
+    const infoMediaHtml =
+      infoItem && infoItem.recording?.local_url
+        ? `<video class="info-video" controls playsinline preload="metadata" src="${infoItem.recording.local_url}"></video>`
+        : infoItem && infoItem.snapshot_url
+          ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || this._t("snapshot")}" loading="lazy" />`
+          : `<div class="placeholder">${this._t("no_snapshot")}</div>`;
     const infoDialogHtml =
       this._infoDialog.open && infoItem
         ? `
@@ -568,11 +499,7 @@ class ReolinkFeedCard extends HTMLElement {
           <button class="close-info-top" type="button" aria-label="${this._t("close_info_dialog")}">✕</button>
         </div>
         <div class="info-body">
-          ${
-            infoItem.snapshot_url
-              ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || this._t("snapshot")}" loading="lazy" />`
-              : `<div class="placeholder">${this._t("no_snapshot")}</div>`
-          }
+          ${infoMediaHtml}
           <div><strong>${this._t("camera")}:</strong> ${infoItem.camera_name || "-"}</div>
           <div><strong>${this._t("timestamp")}:</strong> ${this._formatDateTime(infoItem.start_ts) || "-"}</div>
           <div><strong>${this._t("duration")}:</strong> ${this._formatDuration(infoItem.duration_s)}</div>
@@ -620,37 +547,22 @@ class ReolinkFeedCard extends HTMLElement {
         .thumb { position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 10px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; appearance: none; -webkit-appearance: none; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .thumb::before { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), inset 0 -48px 40px rgba(0,0,0,0.45), inset 0 40px 28px rgba(0,0,0,0.30); pointer-events: none; z-index: 1; }
-        .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; will-change: opacity; z-index: 2; }
-        .thumb:hover .play-overlay, .thumb:focus-visible .play-overlay { opacity: 1; }
-        .play-overlay svg { width: 22px; height: 22px; fill: #fff; }
         .overlay { position: absolute; z-index: 3; display: inline-flex; align-items: center; }
         .overlay.top-left { top: 8px; left: 8px; }
-        .overlay.top-right { top: 8px; right: 8px; }
         .overlay.bottom-left { left: 8px; bottom: 8px; max-width: calc(100% - 16px); }
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
         .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(2px); }
         .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; }
         .line2 { color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 7px; background: rgba(0, 0, 0, 0.40); backdrop-filter: blur(2px); display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
-        .info-trigger { border: 0; background: rgba(0, 0, 0, 0.35); color: #fff; border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; backdrop-filter: blur(2px); }
-        .info-trigger:hover { background: rgba(255, 255, 255, 0.16); }
-        .info-trigger:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
-        .info-trigger ha-icon { --mdc-icon-size: 14px; color: #fff; }
         .empty { color: var(--secondary-text-color); font-size: 13px; padding: 8px 2px; }
         .error { color: var(--error-color); font-size: 12px; white-space: pre-wrap; }
-
-        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: grid; place-items: center; z-index: 9999; }
-        .modal { width: min(92vw, 980px); background: #111; border: 1px solid #333; border-radius: 12px; overflow: hidden; color: #fff; }
-        .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #333; font-weight: 600; }
-        .close { border: 1px solid #555; background: transparent; color: #fff; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; }
-        .modal-body { padding: 10px; display: grid; gap: 8px; }
-        .modal video { width: 100%; max-height: 72vh; background: #000; }
-        .modal img { width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
         ha-dialog { --dialog-content-padding: 0; }
         .info-head { padding: 14px 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--divider-color); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
         .info-body { padding: 12px 16px; display: grid; gap: 10px; color: var(--primary-text-color); }
         .info-links { display: flex; gap: 12px; }
         .info-links a, .info-body a { color: var(--primary-color); text-decoration: none; }
         .info-links a:hover, .info-body a:hover { text-decoration: underline; }
+        .info-video { width: 100%; max-height: 280px; border-radius: 8px; border: 1px solid var(--divider-color); background: #000; }
         .info-snapshot { width: 100%; max-height: 280px; object-fit: cover; border-radius: 8px; border: 1px solid var(--divider-color); }
         .info-body .placeholder { width: 100%; height: 220px; border-radius: 8px; border: 1px solid var(--divider-color); display: grid; place-items: center; color: var(--secondary-text-color); background: rgba(255,255,255,0.03); font-size: 13px; }
         .info-actions { padding: 0 16px 14px 16px; display: flex; justify-content: space-between; gap: 10px; }
@@ -672,7 +584,6 @@ class ReolinkFeedCard extends HTMLElement {
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">${this._t("no_detections")}</div>`}
       </ha-card>
-      ${modalHtml}
       ${infoDialogHtml}
     `;
 
@@ -682,25 +593,11 @@ class ReolinkFeedCard extends HTMLElement {
       if (!item) return;
 
       const thumb = el.querySelector("button.thumb");
-      const info = el.querySelector(".info-trigger");
 
       if (thumb) {
         thumb.addEventListener("click", (ev) => {
           ev.preventDefault();
           this._openFromThumbnail(item);
-        });
-      }
-      if (info) {
-        info.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          this._openInfoDialog(item);
-        });
-        info.addEventListener("keydown", (ev) => {
-          if (ev.key !== "Enter" && ev.key !== " ") return;
-          ev.preventDefault();
-          ev.stopPropagation();
-          this._openInfoDialog(item);
         });
       }
     });
@@ -730,13 +627,6 @@ class ReolinkFeedCard extends HTMLElement {
       });
     });
 
-    this.shadowRoot.querySelectorAll("[data-close='1']").forEach((el) => {
-      el.addEventListener("click", (ev) => {
-        if (ev.target === el || ev.target?.getAttribute("data-close") === "1") {
-          this._closeModal();
-        }
-      });
-    });
     const closeInfoTopButton = this.shadowRoot.querySelector("button.close-info-top");
     closeInfoTopButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
