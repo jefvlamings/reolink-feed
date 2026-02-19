@@ -1,0 +1,100 @@
+"""Unit tests for feed helper functions."""
+
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+from custom_components.reolink_feed.const import MERGE_WINDOW_SECONDS, RECORDING_DEFAULT_CLIP_DURATION_SECONDS
+from custom_components.reolink_feed.feed import (
+    _build_detection_items_for_entity,
+    _camera_name_from_state,
+    _duration_token_to_seconds,
+    _events_overlap_or_close,
+    _merge_detection_items,
+    _parse_day_from_media_node,
+)
+from custom_components.reolink_feed.models import DetectionItem
+
+
+def test_duration_token_to_seconds_parses_and_falls_back() -> None:
+    assert _duration_token_to_seconds("00:00:11") == 11
+    assert _duration_token_to_seconds("01:02:03") == 3723
+    assert _duration_token_to_seconds("bad") == RECORDING_DEFAULT_CLIP_DURATION_SECONDS
+
+
+def test_events_overlap_or_close_with_tolerance() -> None:
+    a_start = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+    a_end = datetime(2026, 2, 19, 12, 0, 10, tzinfo=timezone.utc)
+    b_start = datetime(2026, 2, 19, 12, 0, 20, tzinfo=timezone.utc)
+    b_end = datetime(2026, 2, 19, 12, 0, 30, tzinfo=timezone.utc)
+
+    assert _events_overlap_or_close(a_start, a_end, b_start, b_end, 10)
+    assert not _events_overlap_or_close(a_start, a_end, b_start, b_end, 9)
+
+
+def test_parse_day_from_media_node_supports_media_id_and_title() -> None:
+    from_media_id = SimpleNamespace(media_content_id="media-source://reolink/DAY|x|x|x|2026|2|19", title="")
+    from_title = SimpleNamespace(media_content_id="", title="2026/2/18")
+
+    assert str(_parse_day_from_media_node(from_media_id)) == "2026-02-19"
+    assert str(_parse_day_from_media_node(from_title)) == "2026-02-18"
+
+
+def test_camera_name_from_state_removes_detection_suffix() -> None:
+    assert _camera_name_from_state("binary_sensor.front_person", "Front Person") == "Front"
+    assert _camera_name_from_state("binary_sensor.achterdeur_dier", "Achterdeur Dier") == "Achterdeur"
+    assert _camera_name_from_state("binary_sensor.garage", None) == "Garage"
+
+
+def test_merge_detection_items_merges_small_gap_events() -> None:
+    start = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+    first_end = start + timedelta(seconds=10)
+    second_start = first_end + timedelta(seconds=MERGE_WINDOW_SECONDS - 1)
+    second_end = second_start + timedelta(seconds=8)
+
+    first = DetectionItem(
+        id="a",
+        start_ts=start.isoformat(),
+        end_ts=first_end.isoformat(),
+        duration_s=10,
+        label="person",
+        source_entity_id="binary_sensor.cam_person",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+    second = DetectionItem(
+        id="b",
+        start_ts=second_start.isoformat(),
+        end_ts=second_end.isoformat(),
+        duration_s=8,
+        label="person",
+        source_entity_id="binary_sensor.cam_person",
+        camera_name="Front",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+
+    merged = _merge_detection_items([first, second])
+    assert len(merged) == 1
+    assert merged[0].start_ts == first.start_ts
+    assert merged[0].end_ts == second.end_ts
+    assert merged[0].duration_s == int((second_end - start).total_seconds())
+
+
+def test_build_detection_items_for_entity_builds_on_off_pairs() -> None:
+    start = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=12)
+    since_dt = start - timedelta(minutes=5)
+
+    states = [
+        SimpleNamespace(state="on", last_changed=start, last_updated=start, name="Front Person"),
+        SimpleNamespace(state="off", last_changed=end, last_updated=end, name="Front Person"),
+    ]
+
+    items = _build_detection_items_for_entity("binary_sensor.front_person", "person", states, since_dt)
+
+    assert len(items) == 1
+    assert items[0].label == "person"
+    assert items[0].camera_name == "Front"
+    assert items[0].duration_s == 12
+
