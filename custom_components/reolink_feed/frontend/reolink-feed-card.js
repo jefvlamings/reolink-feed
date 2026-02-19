@@ -475,20 +475,15 @@ class ReolinkFeedCard extends HTMLElement {
         button.rebuild { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
         button.rebuild:hover { background: var(--secondary-background-color); }
         button.rebuild:disabled { opacity: 0.6; cursor: default; }
-        button.refresh-feed { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 30px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
-        button.refresh-feed:hover { background: var(--secondary-background-color); }
-        button.refresh-feed svg { width: 15px; height: 15px; }
         button.rebuild ha-icon { --mdc-icon-size: 15px; }
-        button.refresh-feed.loading svg { animation: spin 1s linear infinite; }
-        button.refresh-feed:disabled { opacity: 0.6; cursor: default; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
         .page-info { color: var(--secondary-text-color); font-size: 12px; min-width: 84px; text-align: center; }
         button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
         button.page-nav:hover { background: var(--secondary-background-color); }
         button.page-nav:disabled { opacity: 0.6; cursor: default; }
-        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
         .item { position: relative; padding: 0; border-radius: 10px; overflow: hidden; background: rgba(255, 255, 255, 0.04); }
-        .thumb { position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 10px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; line-height: 0; appearance: none; -webkit-appearance: none; }
+        .thumb { position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 10px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; appearance: none; -webkit-appearance: none; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .thumb::before { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), inset 0 -48px 40px rgba(0,0,0,0.45), inset 0 40px 28px rgba(0,0,0,0.30); pointer-events: none; z-index: 1; }
         .play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.18); opacity: 0; transition: opacity 120ms ease; pointer-events: none; will-change: opacity; z-index: 2; }
@@ -501,12 +496,11 @@ class ReolinkFeedCard extends HTMLElement {
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
         .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(2px); }
         .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; }
-        .line2 { color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 7px; background: rgba(0, 0, 0, 0.40); backdrop-filter: blur(2px); }
-        .info-trigger { border: 1px solid rgba(255,255,255,0.22); background: rgba(0, 0, 0, 0.35); color: #fff; border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; backdrop-filter: blur(2px); }
+        .line2 { color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 7px; background: rgba(0, 0, 0, 0.40); backdrop-filter: blur(2px); display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
+        .info-trigger { border: 0; background: rgba(0, 0, 0, 0.35); color: #fff; border-radius: 8px; width: 24px; height: 24px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; backdrop-filter: blur(2px); }
         .info-trigger:hover { background: rgba(255, 255, 255, 0.16); }
         .info-trigger:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
         .info-trigger ha-icon { --mdc-icon-size: 14px; color: #fff; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .empty { color: var(--secondary-text-color); font-size: 13px; padding: 8px 2px; }
         .error { color: var(--error-color); font-size: 12px; white-space: pre-wrap; }
 
@@ -548,15 +542,8 @@ class ReolinkFeedCard extends HTMLElement {
             </button>
           </div>
           <div class="actions">
-            <button class="refresh-feed${this._loading ? " loading" : ""}" ${this._loading ? "disabled" : ""} aria-label="Refresh feed data" title="Refresh feed data">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
-                <polyline points="21 3 21 9 15 9"></polyline>
-              </svg>
-              <span>Refresh</span>
-            </button>
             <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Reset feed from history">
-              <ha-icon icon="mdi:nuke"></ha-icon>
+              <ha-icon icon="mdi:bomb"></ha-icon>
               <span>${this._rebuilding ? "Resetting..." : "Reset"}</span>
             </button>
           </div>
@@ -601,11 +588,6 @@ class ReolinkFeedCard extends HTMLElement {
     rebuildButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
       this._rebuildFromHistory();
-    });
-    const refreshFeedButton = this.shadowRoot.querySelector("button.refresh-feed");
-    refreshFeedButton?.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      this._loadItems();
     });
     this.shadowRoot.querySelectorAll(".filter-pill").forEach((el) => {
       el.addEventListener("click", (ev) => {
@@ -655,6 +637,17 @@ class ReolinkFeedCard extends HTMLElement {
       ev.preventDefault();
       if (!infoItem) return;
       this._deleteItem(infoItem);
+    });
+    const infoDialogEl = this.shadowRoot.querySelector("ha-dialog");
+    infoDialogEl?.addEventListener("closed", () => {
+      if (this._infoDialog.open) {
+        this._closeInfoDialog();
+      }
+    });
+    infoDialogEl?.addEventListener("close", () => {
+      if (this._infoDialog.open) {
+        this._closeInfoDialog();
+      }
     });
   }
 }
