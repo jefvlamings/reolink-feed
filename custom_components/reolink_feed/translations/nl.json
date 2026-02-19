@@ -1,0 +1,24 @@
+{
+  "title": "Reolink Feed",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Reolink Feed",
+        "description": "Voeg de Reolink Feed-integratie toe."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Er is maar één Reolink Feed-instantie toegestaan."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Reolink Feed-opties",
+        "data": {
+          "enabled_labels": "Ingeschakelde detecties"
+        }
+      }
+    }
+  }
+}

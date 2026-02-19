@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
-import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.helpers import config_validation as cv
+import voluptuous as vol
 
 from .const import CONF_ENABLED_LABELS, DEFAULT_ENABLED_DETECTION_LABELS, DOMAIN, SUPPORTED_DETECTION_LABELS
 
 
-def _label_options() -> dict[str, str]:
-    return {label: label.title() for label in SUPPORTED_DETECTION_LABELS}
+_LABEL_TITLES = {
+    "en": {
+        "person": "Person",
+        "pet": "Pet",
+        "vehicle": "Vehicle",
+        "motion": "Motion",
+        "visitor": "Visitor",
+    },
+    "nl": {
+        "person": "Persoon",
+        "pet": "Huisdier",
+        "vehicle": "Voertuig",
+        "motion": "Beweging",
+        "visitor": "Bezoeker",
+    },
+}
 
 
 class ReolinkFeedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -62,8 +75,14 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ENABLED_LABELS, default=default_labels): cv.multi_select(
-                        _label_options()
+                        self._label_options()
                     ),
                 }
             ),
         )
+
+    def _label_options(self) -> dict[str, str]:
+        language = str(self.hass.config.language or "en").lower()
+        base = language.split("-")[0]
+        titles = _LABEL_TITLES.get(base, _LABEL_TITLES["en"])
+        return {label: titles.get(label, label.title()) for label in SUPPORTED_DETECTION_LABELS}

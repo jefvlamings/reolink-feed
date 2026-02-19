@@ -104,11 +104,17 @@ class ReolinkFeedCard extends HTMLElement {
       page_size: 20,
       ...config,
     };
-    const configuredLabels = Array.isArray(this._config.labels)
-      ? this._config.labels
-          .map((label) => normalizeCardLabel(label))
-          .filter((label) => SUPPORTED_CARD_LABELS.includes(label))
+    const rawLabels = Array.isArray(this._config.labels)
+      ? this._config.labels.map((label) => String(label || "").toLowerCase().trim())
       : [];
+    // Migrate legacy card default (person + animal) to "all labels enabled by default".
+    const isLegacyDefaultLabels =
+      rawLabels.length === 2 && rawLabels.includes("person") && rawLabels.includes("animal");
+    const configuredLabels = isLegacyDefaultLabels
+      ? []
+      : rawLabels
+          .map((label) => normalizeCardLabel(label))
+          .filter((label) => SUPPORTED_CARD_LABELS.includes(label));
     this._configuredLabels = configuredLabels;
     this._activeLabels = new Set(configuredLabels);
     this._filtersInitialized = false;
@@ -163,7 +169,7 @@ class ReolinkFeedCard extends HTMLElement {
     if (normalized === "pet") return "mdi:dog-side";
     if (normalized === "vehicle") return "mdi:car";
     if (normalized === "motion") return "mdi:motion-sensor";
-    if (normalized === "visitor") return "mdi:account-arrow-right";
+    if (normalized === "visitor") return "mdi:doorbell";
     return "mdi:account";
   }
 
