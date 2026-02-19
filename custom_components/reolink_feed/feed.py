@@ -124,17 +124,13 @@ class ReolinkFeedManager:
         removed = self._trim_to_max_detections()
         if not removed:
             return 0
-        removed_ids = {item.id for item in removed}
-        for item_id in removed_ids:
-            self._cancel_recording_resolution(item_id)
-            snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
-            if snapshot_unsub:
-                snapshot_unsub()
-        await self._async_delete_snapshots_for_items(removed)
-        self._rebuild_indexes()
-        await self._store.async_save(self._items)
-        _LOGGER.info("Trimmed %s reolink feed items above max_detections=%s", len(removed), self._max_detections)
-        return len(removed)
+        removed_count = await self._async_remove_items(removed)
+        _LOGGER.info(
+            "Trimmed %s reolink feed items above max_detections=%s",
+            removed_count,
+            self._max_detections,
+        )
+        return removed_count
 
     async def _async_enforce_storage_limit(self) -> int:
         if self._max_storage_bytes <= 0 or not self._items:
@@ -164,23 +160,42 @@ class ReolinkFeedManager:
         if not removed:
             return 0
 
-        removed_ids = {item.id for item in removed}
-        for item_id in removed_ids:
+        self._items = kept
+        removed_count = await self._async_remove_items(removed)
+        _LOGGER.info(
+            "Trimmed %s reolink feed items to enforce max_storage_gb=%s",
+            removed_count,
+            self._max_storage_gb,
+        )
+        return removed_count
+
+    async def _async_remove_items(
+        self, items: list[DetectionItem], *, save: bool = True
+    ) -> int:
+        """Remove items, clean up timers/assets, rebuild indexes, optionally persist."""
+        if not items:
+            return 0
+
+        unique_items: list[DetectionItem] = []
+        seen_ids: set[str] = set()
+        for item in items:
+            if item.id in seen_ids:
+                continue
+            seen_ids.add(item.id)
+            unique_items.append(item)
+
+        for item_id in seen_ids:
             self._cancel_recording_resolution(item_id)
             snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
             if snapshot_unsub:
                 snapshot_unsub()
 
-        self._items = kept
-        await self._async_delete_snapshots_for_items(removed)
+        self._items = [item for item in self._items if item.id not in seen_ids]
+        await self._async_delete_snapshots_for_items(unique_items)
         self._rebuild_indexes()
-        await self._store.async_save(self._items)
-        _LOGGER.info(
-            "Trimmed %s reolink feed items to enforce max_storage_gb=%s",
-            len(removed),
-            self._max_storage_gb,
-        )
-        return len(removed)
+        if save:
+            await self._store.async_save(self._items)
+        return len(unique_items)
 
     def _normalize_item_labels(self) -> bool:
         changed = False
@@ -308,19 +323,10 @@ class ReolinkFeedManager:
         if not removed:
             return 0
 
-        removed_ids = {item.id for item in removed}
-        for item_id in removed_ids:
-            self._cancel_recording_resolution(item_id)
-            snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
-            if snapshot_unsub:
-                snapshot_unsub()
-
-        await self._async_delete_snapshots_for_items(removed)
         self._items = kept
-        self._rebuild_indexes()
-        await self._store.async_save(self._items)
-        _LOGGER.info("Pruned %s expired reolink feed items", len(removed))
-        return len(removed)
+        removed_count = await self._async_remove_items(removed)
+        _LOGGER.info("Pruned %s expired reolink feed items", removed_count)
+        return removed_count
 
     async def async_delete_item(self, item_id: str) -> None:
         """Delete one feed item and local assets."""
@@ -328,15 +334,7 @@ class ReolinkFeedManager:
         if item is None:
             raise ValueError(f"Unknown item id: {item_id}")
 
-        self._cancel_recording_resolution(item.id)
-        snapshot_unsub = self._unsub_snapshot_timers.pop(item.id, None)
-        if snapshot_unsub:
-            snapshot_unsub()
-
-        self._items = [existing for existing in self._items if existing.id != item.id]
-        await self._async_delete_snapshots_for_items([item])
-        self._rebuild_indexes()
-        await self._store.async_save(self._items)
+        await self._async_remove_items([item])
 
     def _schedule_cleanup(self) -> None:
         if self._unsub_cleanup_timer is not None:
@@ -471,14 +469,7 @@ class ReolinkFeedManager:
         self._open_item_id_by_key[key] = item.id
         removed = self._trim_to_max_detections()
         if removed:
-            removed_ids = {removed_item.id for removed_item in removed}
-            for removed_id in removed_ids:
-                self._cancel_recording_resolution(removed_id)
-                snapshot_unsub = self._unsub_snapshot_timers.pop(removed_id, None)
-                if snapshot_unsub:
-                    snapshot_unsub()
-            self._rebuild_indexes()
-            self.hass.async_create_task(self._async_delete_snapshots_for_items(removed))
+            self.hass.async_create_task(self._async_remove_items(removed, save=False))
         self._schedule_save()
         self._schedule_snapshot_capture(item.id, entity_id)
 
@@ -972,18 +963,6 @@ class ReolinkFeedManager:
                     _LOGGER.debug("Recording resolve failed for rebuilt item %s: %s", item_id, err)
 
         await asyncio.gather(*[_resolve_item(item_id) for item_id in item_ids])
-
-    def _cancel_all_timers(self) -> None:
-        if self._unsub_delayed_save:
-            self._unsub_delayed_save()
-            self._unsub_delayed_save = None
-        for unsub in self._unsub_snapshot_timers.values():
-            unsub()
-        self._unsub_snapshot_timers.clear()
-        for timer_unsubs in self._unsub_recording_timers.values():
-            for unsub in timer_unsubs:
-                unsub()
-        self._unsub_recording_timers.clear()
 
     def _collect_reolink_detection_entities(self) -> list[str]:
         ent_reg = er.async_get(self.hass)
