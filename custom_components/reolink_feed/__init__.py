@@ -256,7 +256,6 @@ async def ws_list_items(
     entry: ReolinkFeedConfigEntry = entries[0]
     await entry.runtime_data.manager.async_migrate_legacy_snapshot_urls()
     await entry.runtime_data.manager.async_prune_expired_items()
-    await entry.runtime_data.manager.async_enforce_storage_limit()
     items = entry.runtime_data.manager.get_items()
 
     enabled_labels = entry.runtime_data.manager.get_enabled_labels()
