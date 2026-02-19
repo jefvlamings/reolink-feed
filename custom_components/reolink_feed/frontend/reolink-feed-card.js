@@ -35,7 +35,7 @@ const CARD_I18N = {
     close: "Close",
     close_info_dialog: "Close info dialog",
     snapshot: "Snapshot",
-    page_size: "Page size",
+    page_size: "Items per page",
   },
   nl: {
     person: "Persoon",
@@ -65,7 +65,7 @@ const CARD_I18N = {
     close: "Sluiten",
     close_info_dialog: "Sluit detectiedialoog",
     snapshot: "Snapshot",
-    page_size: "Paginagrootte",
+    page_size: "Items per pagina",
   },
 };
 
