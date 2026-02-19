@@ -511,7 +511,7 @@ class ReolinkFeedCard extends HTMLElement {
         : `<span title="${infoPhotoHref || ""}">${infoPhotoName || "-"}</span>`;
     const infoMediaHtml =
       infoItem && infoItem.recording?.local_url
-        ? `<video class="info-video" controls playsinline preload="metadata" src="${infoItem.recording.local_url}"></video>`
+        ? `<video class="info-video" controls autoplay muted playsinline preload="auto" src="${infoItem.recording.local_url}"></video>`
         : infoItem && infoItem.snapshot_url
           ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || this._t("snapshot")}" loading="lazy" />`
           : `<div class="placeholder">${this._t("no_snapshot")}</div>`;
@@ -671,6 +671,37 @@ class ReolinkFeedCard extends HTMLElement {
       this._deleteItem(infoItem);
     });
     const infoDialogEl = this.shadowRoot.querySelector("ha-dialog");
+    const infoVideoEl = this.shadowRoot.querySelector("video.info-video");
+    if (this._infoDialog.open && infoVideoEl) {
+      const initialOffsetSeconds = 5;
+      let initialSeekApplied = false;
+      const applyInitialSeek = () => {
+        if (initialSeekApplied) return;
+        const duration = Number(infoVideoEl.duration);
+        if (!Number.isFinite(duration) || duration <= initialOffsetSeconds) return;
+        try {
+          infoVideoEl.currentTime = initialOffsetSeconds;
+          initialSeekApplied = true;
+        } catch (_err) {
+          // Some browsers may reject early seek before enough media is buffered.
+        }
+      };
+      infoVideoEl.muted = true;
+      infoVideoEl.playsInline = true;
+      infoVideoEl.preload = "auto";
+      if (infoVideoEl.readyState >= 1) {
+        applyInitialSeek();
+      } else {
+        infoVideoEl.addEventListener("loadedmetadata", applyInitialSeek, { once: true });
+      }
+      infoVideoEl.load();
+      const playPromise = infoVideoEl.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => {
+          // Autoplay may be blocked by browser policy; keep controls for manual start.
+        });
+      }
+    }
     infoDialogEl?.addEventListener("closed", () => {
       if (this._infoDialog.open) {
         this._closeInfoDialog();

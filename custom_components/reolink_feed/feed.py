@@ -58,6 +58,7 @@ _LOGGER = logging.getLogger(__name__)
 _CLIP_TITLE_PATTERN = re.compile(
     r"^(?P<start>\d{1,2}:\d{2}:\d{2})(?:\s+(?P<duration>\d+:\d{2}:\d{2}))?"
 )
+_CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS: tuple[float, ...] = (0.0, 2.0, 5.0)
 
 
 class ReolinkFeedManager:
@@ -408,8 +409,8 @@ class ReolinkFeedManager:
             for item in self._items
             if item.id in resolve_item_ids and item.end_ts is not None
         }
-        await self._async_resolve_recordings_immediately(sorted(resolvable_ids))
-        await self._async_cache_recordings_for_items(self._items)
+        pending_rebuild_items = [item for item in self._items if item.id in resolvable_ids]
+        await self._async_cache_recordings_for_items(pending_rebuild_items)
         await self._store.async_save(self._items)
         return {
             "entity_count": len(entity_ids),
@@ -814,18 +815,21 @@ class ReolinkFeedManager:
         return best[2]
 
     async def _async_cache_recordings_for_items(self, items: list[DetectionItem]) -> None:
-        semaphore = asyncio.Semaphore(2)
+        eligible_items = [
+            item
+            for item in items
+            if item.end_ts is not None and not (item.recording or {}).get("local_url")
+        ]
+        if not eligible_items:
+            return
+        # Reolink playback/download frequently returns "busy" under parallel load.
+        semaphore = asyncio.Semaphore(1)
 
         async def _cache_one(item: DetectionItem) -> None:
-            if item.end_ts is None:
-                return
-            recording = item.recording or {}
-            if recording.get("local_url"):
-                return
             async with semaphore:
                 await self.async_resolve_recording(item.id, final_attempt=True)
 
-        await asyncio.gather(*[_cache_one(item) for item in items])
+        await asyncio.gather(*[_cache_one(item) for item in eligible_items])
 
     async def _async_cache_recording_file(
         self, item: DetectionItem, media_content_id: str
@@ -849,19 +853,35 @@ class ReolinkFeedManager:
             return None
 
         session = async_get_clientsession(self.hass, verify_ssl=False)
-        try:
-            async with session.get(media_url, timeout=120) as response:
-                if response.status >= 400:
-                    _LOGGER.debug(
-                        "Failed to download recording for cache (%s): HTTP %s",
-                        item.id,
-                        response.status,
-                    )
-                    return None
-                payload = await response.read()
-        except (ClientError, TimeoutError) as err:
-            _LOGGER.debug("Recording cache download failed (%s): %s", item.id, err)
-            return None
+        payload: bytes | None = None
+        for attempt, delay_s in enumerate(_CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS, start=1):
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+            try:
+                async with session.get(media_url, timeout=120) as response:
+                    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    if response.status >= 400 or (content_type and content_type != "video/mp4"):
+                        _LOGGER.debug(
+                            "Recording cache download failed (%s) attempt %s/%s: HTTP %s content-type=%s",
+                            item.id,
+                            attempt,
+                            len(_CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS),
+                            response.status,
+                            content_type or "-",
+                        )
+                        continue
+                    payload = await response.read()
+            except (ClientError, TimeoutError) as err:
+                _LOGGER.debug(
+                    "Recording cache download error (%s) attempt %s/%s: %s",
+                    item.id,
+                    attempt,
+                    len(_CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS),
+                    err,
+                )
+                continue
+            if payload:
+                break
 
         if not payload:
             return None
