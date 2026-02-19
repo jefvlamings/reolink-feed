@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import SectionConfig, section
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import selector
 import voluptuous as vol
@@ -11,16 +12,20 @@ from .const import (
     CONF_CACHE_RECORDINGS,
     CONF_ENABLED_LABELS,
     CONF_MAX_DETECTIONS,
+    CONF_MAX_STORAGE_GB,
     CONF_REBUILD_NOW,
     CONF_RETENTION_HOURS,
     DEFAULT_CACHE_RECORDINGS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DEFAULT_MAX_DETECTIONS,
+    DEFAULT_MAX_STORAGE_GB,
     DEFAULT_RETENTION_HOURS,
     DOMAIN,
     MAX_MAX_DETECTIONS,
+    MAX_MAX_STORAGE_GB,
     MAX_RETENTION_HOURS,
     MIN_MAX_DETECTIONS,
+    MIN_MAX_STORAGE_GB,
     MIN_RETENTION_HOURS,
     SUPPORTED_DETECTION_LABELS,
 )
@@ -42,6 +47,7 @@ _LABEL_TITLES = {
         "visitor": "Bezoeker",
     },
 }
+SECTION_RETENTION_POLICY = "retention_policy"
 
 
 class ReolinkFeedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -70,19 +76,27 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Manage options."""
         if user_input is not None:
+            merged_input = dict(user_input)
+            section_input = merged_input.pop(SECTION_RETENTION_POLICY, None)
+            if isinstance(section_input, dict):
+                merged_input.update(section_input)
             selected = [
                 label
-                for label in user_input.get(CONF_ENABLED_LABELS, [])
+                for label in merged_input.get(CONF_ENABLED_LABELS, [])
                 if label in SUPPORTED_DETECTION_LABELS
             ]
             if not selected:
                 selected = list(DEFAULT_ENABLED_DETECTION_LABELS)
-            retention_hours = int(user_input.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS))
+            retention_hours = int(merged_input.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS))
             retention_hours = max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, retention_hours))
-            max_detections = int(user_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS))
+            max_detections = int(merged_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS))
             max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
-            rebuild_now = bool(user_input.get(CONF_REBUILD_NOW, False))
-            cache_recordings = bool(user_input.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS))
+            rebuild_now = bool(merged_input.get(CONF_REBUILD_NOW, False))
+            cache_recordings = bool(
+                merged_input.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS)
+            )
+            max_storage_gb = float(merged_input.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB))
+            max_storage_gb = max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, max_storage_gb))
             if rebuild_now:
                 entry = next(
                     (
@@ -103,6 +117,7 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
                     CONF_RETENTION_HOURS: retention_hours,
                     CONF_MAX_DETECTIONS: max_detections,
                     CONF_CACHE_RECORDINGS: cache_recordings,
+                    CONF_MAX_STORAGE_GB: max_storage_gb,
                 },
             )
 
@@ -124,6 +139,37 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
         cache_recordings = bool(
             self._config_entry.options.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS)
         )
+        max_storage_gb = float(
+            self._config_entry.options.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB)
+        )
+        max_storage_gb = max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, max_storage_gb))
+
+        retention_section_schema = {
+            vol.Required(CONF_RETENTION_HOURS, default=retention_hours): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=MIN_RETENTION_HOURS,
+                    max=MAX_RETENTION_HOURS,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(CONF_MAX_DETECTIONS, default=max_detections): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=MIN_MAX_DETECTIONS,
+                    max=MAX_MAX_DETECTIONS,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(CONF_MAX_STORAGE_GB, default=max_storage_gb): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=MIN_MAX_STORAGE_GB,
+                    max=MAX_MAX_STORAGE_GB,
+                    step=0.1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+        }
 
         return self.async_show_form(
             step_id="init",
@@ -132,26 +178,14 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(CONF_ENABLED_LABELS, default=default_labels): cv.multi_select(
                         self._label_options()
                     ),
-                    vol.Required(CONF_RETENTION_HOURS, default=retention_hours): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=MIN_RETENTION_HOURS,
-                            max=MAX_RETENTION_HOURS,
-                            step=1,
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(CONF_MAX_DETECTIONS, default=max_detections): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=MIN_MAX_DETECTIONS,
-                            max=MAX_MAX_DETECTIONS,
-                            step=1,
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Optional(CONF_REBUILD_NOW, default=False): selector.BooleanSelector(),
                     vol.Required(
                         CONF_CACHE_RECORDINGS, default=cache_recordings
                     ): selector.BooleanSelector(),
+                    vol.Optional(CONF_REBUILD_NOW, default=False): selector.BooleanSelector(),
+                    vol.Optional(SECTION_RETENTION_POLICY): section(
+                        vol.Schema(retention_section_schema),
+                        SectionConfig({"collapsed": False}),
+                    ),
                 }
             ),
         )

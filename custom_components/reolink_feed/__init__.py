@@ -31,16 +31,21 @@ from .const import (
     CONF_CACHE_RECORDINGS,
     CONF_ENABLED_LABELS,
     CONF_MAX_DETECTIONS,
+    CONF_MAX_STORAGE_GB,
     CONF_RETENTION_HOURS,
+    DEFAULT_CACHE_RECORDINGS,
     DEFAULT_RETENTION_HOURS,
+    DEFAULT_MAX_STORAGE_GB,
     DEFAULT_MAX_DETECTIONS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DOMAIN,
     LEGACY_LABEL_ALIASES,
     LIST_ITEMS_LIMIT,
     MAX_MAX_DETECTIONS,
+    MAX_MAX_STORAGE_GB,
     MAX_RETENTION_HOURS,
     MIN_MAX_DETECTIONS,
+    MIN_MAX_STORAGE_GB,
     MIN_RETENTION_HOURS,
     SUPPORTED_DETECTION_LABELS,
 )
@@ -74,6 +79,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) 
         _retention_hours_from_entry(entry),
         _max_detections_from_entry(entry),
         _cache_recordings_from_entry(entry),
+        _max_storage_gb_from_entry(entry),
     )
     await manager.async_start()
     options_unsub = entry.add_update_listener(_async_reload_entry_on_update)
@@ -252,6 +258,7 @@ async def ws_list_items(
     entry: ReolinkFeedConfigEntry = entries[0]
     await entry.runtime_data.manager.async_migrate_legacy_snapshot_urls()
     await entry.runtime_data.manager.async_prune_expired_items()
+    await entry.runtime_data.manager.async_enforce_storage_limit()
     items = entry.runtime_data.manager.get_items()
 
     enabled_labels = entry.runtime_data.manager.get_enabled_labels()
@@ -401,4 +408,13 @@ def _max_detections_from_entry(entry: ReolinkFeedConfigEntry) -> int:
 
 def _cache_recordings_from_entry(entry: ReolinkFeedConfigEntry) -> bool:
     return bool(entry.options.get(CONF_CACHE_RECORDINGS, DEFAULT_CACHE_RECORDINGS))
+
+
+def _max_storage_gb_from_entry(entry: ReolinkFeedConfigEntry) -> float:
+    raw = entry.options.get(CONF_MAX_STORAGE_GB, DEFAULT_MAX_STORAGE_GB)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_STORAGE_GB
+    return max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, value))
     DEFAULT_CACHE_RECORDINGS,

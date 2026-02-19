@@ -33,12 +33,15 @@ from .const import (
     DEFAULT_CACHE_RECORDINGS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DEFAULT_MAX_DETECTIONS,
+    DEFAULT_MAX_STORAGE_GB,
     DEFAULT_RETENTION_HOURS,
     LEGACY_LABEL_ALIASES,
     MAX_MAX_DETECTIONS,
+    MAX_MAX_STORAGE_GB,
     MAX_RETENTION_HOURS,
     MERGE_WINDOW_SECONDS,
     MIN_MAX_DETECTIONS,
+    MIN_MAX_STORAGE_GB,
     MIN_RETENTION_HOURS,
     RECORDING_DEFAULT_CLIP_DURATION_SECONDS,
     RECORDING_RETRY_DELAYS_SECONDS,
@@ -67,6 +70,7 @@ class ReolinkFeedManager:
         retention_hours: int | None = None,
         max_detections: int | None = None,
         cache_recordings: bool = DEFAULT_CACHE_RECORDINGS,
+        max_storage_gb: float | None = None,
     ) -> None:
         self.hass = hass
         self._store = DetectionStore(hass)
@@ -85,6 +89,8 @@ class ReolinkFeedManager:
         self._retention_hours = self._normalize_retention_hours(retention_hours)
         self._max_detections = self._normalize_max_detections(max_detections)
         self._cache_recordings = bool(cache_recordings)
+        self._max_storage_gb = self._normalize_max_storage_gb(max_storage_gb)
+        self._max_storage_bytes = int(self._max_storage_gb * 1024 * 1024 * 1024)
 
     async def async_start(self) -> None:
         """Load initial state and begin listening."""
@@ -96,6 +102,9 @@ class ReolinkFeedManager:
             changed = True
         trimmed = await self._async_trim_to_max_detections()
         if trimmed:
+            changed = True
+        storage_trimmed = await self._async_enforce_storage_limit()
+        if storage_trimmed:
             changed = True
         self._rebuild_indexes()
         self._unsub_state_changed = self.hass.bus.async_listen(
@@ -126,6 +135,52 @@ class ReolinkFeedManager:
         self._rebuild_indexes()
         await self._store.async_save(self._items)
         _LOGGER.info("Trimmed %s reolink feed items above max_detections=%s", len(removed), self._max_detections)
+        return len(removed)
+
+    async def _async_enforce_storage_limit(self) -> int:
+        if self._max_storage_bytes <= 0 or not self._items:
+            return 0
+
+        size_by_id: dict[str, int] = {}
+        total_size = 0
+        for item in self._items:
+            paths = [
+                *_snapshot_paths_for_item(self.hass, self._www_root, item),
+                *_cached_recording_paths_for_item(self._www_root, item),
+            ]
+            item_size = await self.hass.async_add_executor_job(_sum_existing_file_sizes, paths)
+            size_by_id[item.id] = item_size
+            total_size += item_size
+
+        if total_size <= self._max_storage_bytes:
+            return 0
+
+        kept = list(self._items)
+        removed: list[DetectionItem] = []
+        while total_size > self._max_storage_bytes and kept:
+            candidate = kept.pop()  # oldest-first removal
+            removed.append(candidate)
+            total_size -= size_by_id.get(candidate.id, 0)
+
+        if not removed:
+            return 0
+
+        removed_ids = {item.id for item in removed}
+        for item_id in removed_ids:
+            self._cancel_recording_resolution(item_id)
+            snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
+            if snapshot_unsub:
+                snapshot_unsub()
+
+        self._items = kept
+        await self._async_delete_snapshots_for_items(removed)
+        self._rebuild_indexes()
+        await self._store.async_save(self._items)
+        _LOGGER.info(
+            "Trimmed %s reolink feed items to enforce max_storage_gb=%s",
+            len(removed),
+            self._max_storage_gb,
+        )
         return len(removed)
 
     def _normalize_item_labels(self) -> bool:
@@ -173,6 +228,10 @@ class ReolinkFeedManager:
         """Return max retained detections."""
         return self._max_detections
 
+    def get_max_storage_gb(self) -> float:
+        """Return max local asset storage in GB."""
+        return self._max_storage_gb
+
     def _normalize_enabled_labels(self, enabled_labels: set[str] | None) -> set[str]:
         if not enabled_labels:
             return set(DEFAULT_ENABLED_DETECTION_LABELS)
@@ -198,6 +257,15 @@ class ReolinkFeedManager:
             value = DEFAULT_MAX_DETECTIONS
         return max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, value))
 
+    def _normalize_max_storage_gb(self, max_storage_gb: float | None) -> float:
+        if max_storage_gb is None:
+            return float(DEFAULT_MAX_STORAGE_GB)
+        try:
+            value = float(max_storage_gb)
+        except (TypeError, ValueError):
+            value = float(DEFAULT_MAX_STORAGE_GB)
+        return max(MIN_MAX_STORAGE_GB, min(MAX_MAX_STORAGE_GB, value))
+
     def _normalize_label(self, label: str | None) -> str:
         lowered = str(label or "").strip().lower()
         return LEGACY_LABEL_ALIASES.get(lowered, lowered)
@@ -211,6 +279,10 @@ class ReolinkFeedManager:
         if changed:
             await self._store.async_save(self._items)
         return changed
+
+    async def async_enforce_storage_limit(self) -> int:
+        """Public trigger for local storage limit enforcement."""
+        return await self._async_enforce_storage_limit()
 
     async def async_prune_expired_items(self) -> int:
         """Drop items older than retention window and remove local assets."""
@@ -273,6 +345,7 @@ class ReolinkFeedManager:
     async def _async_run_scheduled_cleanup(self) -> None:
         try:
             await self.async_prune_expired_items()
+            await self._async_enforce_storage_limit()
         finally:
             self._schedule_cleanup()
 
@@ -466,6 +539,7 @@ class ReolinkFeedManager:
 
         self._items.insert(0, item)
         await self._async_trim_to_max_detections()
+        await self._async_enforce_storage_limit()
         self._last_closed_item_id_by_key[(camera_name, normalized_label)] = item.id
         self._schedule_save()
         self._schedule_recording_resolution(item.id)
@@ -595,6 +669,7 @@ class ReolinkFeedManager:
 
         item.snapshot_url = f"/local/{relative.as_posix()}"
         self._schedule_save()
+        await self._async_enforce_storage_limit()
 
     async def _async_find_recording_media_content_id(self, item: DetectionItem) -> str | None:
         label_title = _recording_label_title(item.label)
@@ -755,6 +830,7 @@ class ReolinkFeedManager:
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to persist recording cache (%s): %s", item.id, err)
             return None
+        await self._async_enforce_storage_limit()
         return f"/local/{relative.as_posix()}"
 
     def _sign_ha_path_if_needed(self, url: str) -> str:
@@ -1249,6 +1325,17 @@ def _delete_files_and_empty_parents(paths: list[Path]) -> None:
         except OSError:
             continue
         _delete_empty_parents(path.parent)
+
+
+def _sum_existing_file_sizes(paths: list[Path]) -> int:
+    total = 0
+    for path in paths:
+        try:
+            if path.exists() and path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 def _delete_empty_parents(start_dir: Path) -> None:

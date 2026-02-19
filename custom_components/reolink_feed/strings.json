@@ -17,10 +17,18 @@
         "title": "Reolink Feed options",
         "data": {
           "enabled_labels": "Enabled detections",
-          "retention_hours": "Retention (hours)",
-          "max_detections": "Maximum detections",
           "rebuild_now": "Rebuild feed now",
           "cache_recordings": "Cache recordings locally"
+        },
+        "sections": {
+          "retention_policy": {
+            "name": "Retention policy",
+            "data": {
+              "retention_hours": "Retention (hours)",
+              "max_detections": "Maximum detections",
+              "max_storage_gb": "Maximum storage (GB)"
+            }
+          }
         }
       }
     }

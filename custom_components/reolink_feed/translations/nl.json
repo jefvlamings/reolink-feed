@@ -17,10 +17,18 @@
         "title": "Reolink Feed-opties",
         "data": {
           "enabled_labels": "Ingeschakelde detecties",
-          "retention_hours": "Bewaartermijn (uren)",
-          "max_detections": "Maximum detecties",
           "rebuild_now": "Feed nu opnieuw opbouwen",
           "cache_recordings": "Opnames lokaal cachen"
+        },
+        "sections": {
+          "retention_policy": {
+            "name": "Bewaarbeleid",
+            "data": {
+              "retention_hours": "Bewaartermijn (uren)",
+              "max_detections": "Maximum detecties",
+              "max_storage_gb": "Maximale opslag (GB)"
+            }
+          }
         }
       }
     }
