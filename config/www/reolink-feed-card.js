@@ -542,16 +542,14 @@ class ReolinkFeedCard extends HTMLElement {
             ${infoPhotoLinkHtml}
           </div>
         </div>
-        <div class="info-actions">
-          <button class="reset-info${this._resolvingIds.has(infoItem.id) ? " resolving" : ""}" type="button">
+          <button slot="secondaryAction" class="reset-info${this._resolvingIds.has(infoItem.id) ? " resolving" : ""}" type="button">
             <ha-icon icon="mdi:arrow-u-left-top"></ha-icon>
             <span>${this._t("reset")}</span>
           </button>
-          <button class="delete-info" type="button">
+          <button slot="primaryAction" class="delete-info" type="button">
             <ha-icon icon="mdi:trash-can-outline"></ha-icon>
             <span>${this._t("delete")}</span>
           </button>
-        </div>
       </ha-dialog>
       `
         : "";
@@ -594,7 +592,6 @@ class ReolinkFeedCard extends HTMLElement {
         .info-video { width: 100%; max-height: 280px; border-radius: 8px; border: 1px solid var(--divider-color); background: #000; }
         .info-snapshot { width: 100%; max-height: 280px; object-fit: cover; border-radius: 8px; border: 1px solid var(--divider-color); }
         .info-body .placeholder { width: 100%; height: 220px; border-radius: 8px; border: 1px solid var(--divider-color); display: grid; place-items: center; color: var(--secondary-text-color); background: rgba(255,255,255,0.03); font-size: 13px; }
-        .info-actions { padding: 0 16px 14px 16px; display: flex; justify-content: space-between; gap: 10px; }
         .close-info-top { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         .close-info-top:hover { background: var(--secondary-background-color); }
         .reset-info, .delete-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 34px; padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
