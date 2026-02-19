@@ -1,3 +1,66 @@
+const CARD_I18N = {
+  en: {
+    person: "Person",
+    animal: "Animal",
+    detection_info: "Detection info",
+    no_snapshot: "No snapshot",
+    camera: "Camera",
+    timestamp: "Timestamp",
+    duration: "Duration",
+    detection: "Detection",
+    history: "History",
+    logbook: "Logbook",
+    file: "File",
+    go_to_folder: "Go to folder",
+    reset: "Reset",
+    resetting: "Resetting...",
+    delete: "Delete",
+    no_detections: "No detections in range.",
+    previous: "Previous",
+    next: "Next",
+    page: "Page",
+    open_recording_preview: "Open recording preview",
+    show_detection_info: "Show detection info",
+    recording_preview: "Recording preview",
+    close: "Close",
+    close_info_dialog: "Close info dialog",
+    snapshot: "Snapshot",
+    reset_feed_from_history: "Reset feed from history",
+    page_size: "Page size",
+    labels: "Labels",
+  },
+  nl: {
+    person: "Persoon",
+    animal: "Dier",
+    detection_info: "Detectie-info",
+    no_snapshot: "Geen snapshot",
+    camera: "Camera",
+    timestamp: "Tijdstip",
+    duration: "Duur",
+    detection: "Detectie",
+    history: "Geschiedenis",
+    logbook: "Logboek",
+    file: "Bestand",
+    go_to_folder: "Ga naar map",
+    reset: "Reset",
+    resetting: "Resetten...",
+    delete: "Verwijderen",
+    no_detections: "Geen detecties in bereik.",
+    previous: "Vorige",
+    next: "Volgende",
+    page: "Pagina",
+    open_recording_preview: "Open opnamevoorbeeld",
+    show_detection_info: "Toon detectie-info",
+    recording_preview: "Opnamevoorbeeld",
+    close: "Sluiten",
+    close_info_dialog: "Sluit detectiedialoog",
+    snapshot: "Snapshot",
+    reset_feed_from_history: "Reset feed vanuit geschiedenis",
+    page_size: "Paginagrootte",
+    labels: "Labels",
+  },
+};
+
 class ReolinkFeedCard extends HTMLElement {
   constructor() {
     super();
@@ -51,6 +114,23 @@ class ReolinkFeedCard extends HTMLElement {
 
   getCardSize() {
     return 6;
+  }
+
+  _languageCode() {
+    const raw = String(this._hass?.language || document.documentElement.lang || "en").toLowerCase();
+    if (CARD_I18N[raw]) return raw;
+    const base = raw.split("-")[0];
+    if (CARD_I18N[base]) return base;
+    return "en";
+  }
+
+  _t(key) {
+    const lang = this._languageCode();
+    return CARD_I18N[lang]?.[key] || CARD_I18N.en[key] || key;
+  }
+
+  _labelText(label) {
+    return label === "animal" ? this._t("animal") : this._t("person");
   }
 
   _applyFilters() {
@@ -330,15 +410,16 @@ class ReolinkFeedCard extends HTMLElement {
   }
 
   _labelIcon(label) {
+    const labelText = this._labelText(label);
     if (label === "animal") {
       return `
-        <span class="label-icon animal" title="Animal" aria-label="Animal">
+        <span class="label-icon animal" title="${labelText}" aria-label="${labelText}">
           <ha-icon icon="mdi:dog-side"></ha-icon>
         </span>
       `;
     }
     return `
-      <span class="label-icon person" title="Person" aria-label="Person">
+      <span class="label-icon person" title="${labelText}" aria-label="${labelText}">
         <ha-icon icon="mdi:account"></ha-icon>
       </span>
     `;
@@ -357,18 +438,18 @@ class ReolinkFeedCard extends HTMLElement {
       .map((item) => {
         const image = item.snapshot_url
           ? `<img src="${item.snapshot_url}" alt="${item.camera_name}" loading="lazy" />`
-          : `<div class="placeholder">No snapshot</div>`;
+          : `<div class="placeholder">${this._t("no_snapshot")}</div>`;
         const resolving = this._resolvingIds.has(item.id) ? " resolving" : "";
 
         return `
           <li class="item" data-id="${item.id}">
-            <button class="thumb" aria-label="Open recording preview">
+            <button class="thumb" aria-label="${this._t("open_recording_preview")}">
               ${image}
               <span class="overlay top-left">
                 ${this._labelIcon(item.label)}
               </span>
               <span class="overlay top-right">
-                <span class="info-trigger" role="button" tabindex="0" aria-label="Show detection info" title="Show detection info">
+                <span class="info-trigger" role="button" tabindex="0" aria-label="${this._t("show_detection_info")}" title="${this._t("show_detection_info")}">
                   <ha-icon icon="mdi:information-outline"></ha-icon>
                 </span>
               </span>
@@ -389,9 +470,9 @@ class ReolinkFeedCard extends HTMLElement {
       this._filteredItems.length > this._pageSize()
         ? `
       <div class="pagination">
-        <button class="page-nav" data-page-nav="prev" ${this._page <= 1 ? "disabled" : ""}>Previous</button>
-        <span class="page-info">Page ${this._page} / ${totalPages}</span>
-        <button class="page-nav" data-page-nav="next" ${this._page >= totalPages ? "disabled" : ""}>Next</button>
+        <button class="page-nav" data-page-nav="prev" ${this._page <= 1 ? "disabled" : ""}>${this._t("previous")}</button>
+        <span class="page-info">${this._t("page")} ${this._page} / ${totalPages}</span>
+        <button class="page-nav" data-page-nav="next" ${this._page >= totalPages ? "disabled" : ""}>${this._t("next")}</button>
       </div>
       `
         : "";
@@ -399,10 +480,10 @@ class ReolinkFeedCard extends HTMLElement {
     const modalHtml = this._modal.open
       ? `
       <div class="modal-backdrop" data-close="1">
-        <div class="modal" role="dialog" aria-modal="true" aria-label="Recording preview">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="${this._t("recording_preview")}">
           <div class="modal-head">
             <span>${this._modal.title}</span>
-            <button class="close" data-close="1" aria-label="Close">✕</button>
+            <button class="close" data-close="1" aria-label="${this._t("close")}">✕</button>
           </div>
           <div class="modal-body">
             ${
@@ -424,36 +505,36 @@ class ReolinkFeedCard extends HTMLElement {
         ? `
       <ha-dialog open scrimClickAction="close" escapeKeyAction="close">
         <div class="info-head">
-          <span>Detection info</span>
-          <button class="close-info-top" type="button" aria-label="Close info dialog">✕</button>
+          <span>${this._t("detection_info")}</span>
+          <button class="close-info-top" type="button" aria-label="${this._t("close_info_dialog")}">✕</button>
         </div>
         <div class="info-body">
           ${
             infoItem.snapshot_url
-              ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || "Snapshot"}" loading="lazy" />`
-              : `<div class="placeholder">No snapshot</div>`
+              ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || this._t("snapshot")}" loading="lazy" />`
+              : `<div class="placeholder">${this._t("no_snapshot")}</div>`
           }
-          <div><strong>Camera:</strong> ${infoItem.camera_name || "-"}</div>
-          <div><strong>Timestamp:</strong> ${this._formatDateTime(infoItem.start_ts) || "-"}</div>
-          <div><strong>Duration:</strong> ${this._formatDuration(infoItem.duration_s)}</div>
-          <div><strong>Detection:</strong> ${infoItem.label || "-"}</div>
+          <div><strong>${this._t("camera")}:</strong> ${infoItem.camera_name || "-"}</div>
+          <div><strong>${this._t("timestamp")}:</strong> ${this._formatDateTime(infoItem.start_ts) || "-"}</div>
+          <div><strong>${this._t("duration")}:</strong> ${this._formatDuration(infoItem.duration_s)}</div>
+          <div><strong>${this._t("detection")}:</strong> ${this._labelText(infoItem.label)}</div>
           <div class="info-links">
-            <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">History</a>
-            <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">Logbook</a>
+            <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("history")}</a>
+            <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("logbook")}</a>
           </div>
           <div>
-            <span><strong>File:</strong> ${this._mediaFolderDisplayPath(infoItem)} </span>
-            <a href="/media-browser/browser/${encodeURIComponent(this._mediaBrowserTarget(infoItem, infoItem?.recording?.media_content_id || ""))}" target="_blank" rel="noopener">(Go to folder)</a>
+            <span><strong>${this._t("file")}:</strong> ${this._mediaFolderDisplayPath(infoItem)} </span>
+            <a href="/media-browser/browser/${encodeURIComponent(this._mediaBrowserTarget(infoItem, infoItem?.recording?.media_content_id || ""))}" target="_blank" rel="noopener">(${this._t("go_to_folder")})</a>
           </div>
         </div>
         <div class="info-actions">
           <button class="reset-info${this._resolvingIds.has(infoItem.id) ? " resolving" : ""}" type="button">
             <ha-icon icon="mdi:arrow-u-left-top"></ha-icon>
-            <span>Reset</span>
+            <span>${this._t("reset")}</span>
           </button>
           <button class="delete-info" type="button">
             <ha-icon icon="mdi:trash-can-outline"></ha-icon>
-            <span>Delete</span>
+            <span>${this._t("delete")}</span>
           </button>
         </div>
       </ha-dialog>
@@ -534,22 +615,22 @@ class ReolinkFeedCard extends HTMLElement {
           <div class="filters">
             <button class="filter-pill${personActive ? " active" : ""}" data-filter-label="person" aria-pressed="${personActive ? "true" : "false"}">
               <ha-icon icon="mdi:account"></ha-icon>
-              <span>Person</span>
+              <span>${this._t("person")}</span>
             </button>
             <button class="filter-pill${animalActive ? " active" : ""}" data-filter-label="animal" aria-pressed="${animalActive ? "true" : "false"}">
               <ha-icon icon="mdi:dog-side"></ha-icon>
-              <span>Animal</span>
+              <span>${this._t("animal")}</span>
             </button>
           </div>
           <div class="actions">
-            <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="Reset feed from history">
+            <button class="rebuild" ${this._rebuilding ? "disabled" : ""} aria-label="${this._t("reset_feed_from_history")}">
               <ha-icon icon="mdi:bomb"></ha-icon>
-              <span>${this._rebuilding ? "Resetting..." : "Reset"}</span>
+              <span>${this._rebuilding ? this._t("resetting") : this._t("reset")}</span>
             </button>
           </div>
         </div>
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
-        ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">No detections in range.</div>`}
+        ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">${this._t("no_detections")}</div>`}
       </ha-card>
       ${modalHtml}
       ${infoDialogHtml}
@@ -667,12 +748,31 @@ class ReolinkFeedCardEditor extends HTMLElement {
   constructor() {
     super();
     this._config = {};
+    this._hass = null;
     this.attachShadow({ mode: "open" });
   }
 
   setConfig(config) {
     this._config = { ...config };
     this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _languageCode() {
+    const raw = String(this._hass?.language || document.documentElement.lang || "en").toLowerCase();
+    if (CARD_I18N[raw]) return raw;
+    const base = raw.split("-")[0];
+    if (CARD_I18N[base]) return base;
+    return "en";
+  }
+
+  _t(key) {
+    const lang = this._languageCode();
+    return CARD_I18N[lang]?.[key] || CARD_I18N.en[key] || key;
   }
 
   _emitConfig(next) {
@@ -724,14 +824,14 @@ class ReolinkFeedCardEditor extends HTMLElement {
       </style>
       <div class="grid">
         <div class="field">
-          <label for="page_size">Page size</label>
+          <label for="page_size">${this._t("page_size")}</label>
           <input id="page_size" type="number" min="1" max="100" value="${pageSize}" />
         </div>
         <div class="field">
-          <label>Labels</label>
+          <label>${this._t("labels")}</label>
           <div class="labels">
-            <label><input id="label_person" type="checkbox" ${labels.has("person") ? "checked" : ""} />Person</label>
-            <label><input id="label_animal" type="checkbox" ${labels.has("animal") ? "checked" : ""} />Animal</label>
+            <label><input id="label_person" type="checkbox" ${labels.has("person") ? "checked" : ""} />${this._t("person")}</label>
+            <label><input id="label_animal" type="checkbox" ${labels.has("animal") ? "checked" : ""} />${this._t("animal")}</label>
           </div>
         </div>
       </div>
