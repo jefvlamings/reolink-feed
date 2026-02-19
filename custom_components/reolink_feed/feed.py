@@ -75,8 +75,11 @@ class ReolinkFeedManager:
         self._store = DetectionStore(hass)
         self._www_root = Path(hass.config.path("www"))
         self._items: list[DetectionItem] = []
+        self._item_by_id: dict[str, DetectionItem] = {}
         self._open_item_id_by_key: dict[tuple[str, str], str] = {}
         self._last_closed_item_id_by_key: dict[tuple[str, str], str] = {}
+        self._asset_size_by_item_id: dict[str, int] = {}
+        self._total_asset_size_bytes = 0
         self._snapshot_camera_by_sensor: dict[str, str | None] = {}
         self._label_by_sensor: dict[str, str | None] = {}
         self._unsub_snapshot_timers: dict[str, Callable[[], None]] = {}
@@ -103,6 +106,7 @@ class ReolinkFeedManager:
         trimmed = await self._async_trim_to_max_detections()
         if trimmed:
             changed = True
+        await self._async_sync_storage_usage_index()
         storage_trimmed = await self._async_enforce_storage_limit()
         if storage_trimmed:
             changed = True
@@ -137,16 +141,8 @@ class ReolinkFeedManager:
         if self._max_storage_bytes <= 0 or not self._items:
             return 0
 
-        size_by_id: dict[str, int] = {}
-        total_size = 0
-        for item in self._items:
-            paths = [
-                *_snapshot_paths_for_item(self.hass, self._www_root, item),
-                *_cached_recording_paths_for_item(self._www_root, item),
-            ]
-            item_size = await self.hass.async_add_executor_job(_sum_existing_file_sizes, paths)
-            size_by_id[item.id] = item_size
-            total_size += item_size
+        await self._async_sync_storage_usage_index()
+        total_size = self._total_asset_size_bytes
 
         if total_size <= self._max_storage_bytes:
             return 0
@@ -156,7 +152,7 @@ class ReolinkFeedManager:
         while total_size > self._max_storage_bytes and kept:
             candidate = kept.pop()  # oldest-first removal
             removed.append(candidate)
-            total_size -= size_by_id.get(candidate.id, 0)
+            total_size -= self._asset_size_by_item_id.get(candidate.id, 0)
 
         if not removed:
             return 0
@@ -169,6 +165,41 @@ class ReolinkFeedManager:
             self._max_storage_gb,
         )
         return removed_count
+
+    async def _async_sync_storage_usage_index(self) -> None:
+        """Sync cached asset sizes for current items without full rescans."""
+        current_ids = {item.id for item in self._items}
+        for item_id in list(self._asset_size_by_item_id):
+            if item_id in current_ids:
+                continue
+            self._total_asset_size_bytes -= self._asset_size_by_item_id.pop(item_id, 0)
+        if self._total_asset_size_bytes < 0:
+            self._total_asset_size_bytes = 0
+
+        for item in self._items:
+            if item.id in self._asset_size_by_item_id:
+                continue
+            paths = [
+                *_snapshot_paths_for_item(self.hass, self._www_root, item),
+                *_cached_recording_paths_for_item(self._www_root, item),
+            ]
+            item_size = await self.hass.async_add_executor_job(_sum_existing_file_sizes, paths)
+            self._asset_size_by_item_id[item.id] = item_size
+            self._total_asset_size_bytes += item_size
+
+    async def _async_refresh_item_asset_size(self, item: DetectionItem) -> int:
+        """Refresh one item's cached asset size and return the latest size."""
+        paths = [
+            *_snapshot_paths_for_item(self.hass, self._www_root, item),
+            *_cached_recording_paths_for_item(self._www_root, item),
+        ]
+        item_size = await self.hass.async_add_executor_job(_sum_existing_file_sizes, paths)
+        previous = self._asset_size_by_item_id.get(item.id, 0)
+        self._asset_size_by_item_id[item.id] = item_size
+        self._total_asset_size_bytes += item_size - previous
+        if self._total_asset_size_bytes < 0:
+            self._total_asset_size_bytes = 0
+        return item_size
 
     async def _async_remove_items(
         self, items: list[DetectionItem], *, save: bool = True
@@ -190,6 +221,9 @@ class ReolinkFeedManager:
             snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
             if snapshot_unsub:
                 snapshot_unsub()
+            self._total_asset_size_bytes -= self._asset_size_by_item_id.pop(item_id, 0)
+        if self._total_asset_size_bytes < 0:
+            self._total_asset_size_bytes = 0
 
         self._items = [item for item in self._items if item.id not in seen_ids]
         await self._async_delete_snapshots_for_items(unique_items)
@@ -385,10 +419,12 @@ class ReolinkFeedManager:
         }
 
     def _rebuild_indexes(self) -> None:
+        self._item_by_id.clear()
         self._open_item_id_by_key.clear()
         self._last_closed_item_id_by_key.clear()
 
         for item in self._items:
+            self._item_by_id[item.id] = item
             key = (item.camera_name, item.label)
             if item.end_ts is None:
                 self._open_item_id_by_key[key] = item.id
@@ -463,9 +499,11 @@ class ReolinkFeedManager:
             recording={"status": "pending"},
         )
         self._items.insert(0, item)
+        self._item_by_id[item.id] = item
         self._open_item_id_by_key[key] = item.id
         removed = self._trim_to_max_detections()
         if removed:
+            self._rebuild_indexes()
             self.hass.async_create_task(self._async_remove_items(removed, save=False))
         self._schedule_save()
         self._schedule_snapshot_capture(item.id, entity_id)
@@ -484,10 +522,7 @@ class ReolinkFeedManager:
     def _get_item_by_id(self, item_id: str | None) -> DetectionItem | None:
         if not item_id:
             return None
-        for item in self._items:
-            if item.id == item_id:
-                return item
-        return None
+        return self._item_by_id.get(item_id)
 
     def _schedule_save(self) -> None:
         if self._unsub_delayed_save is not None:
@@ -656,6 +691,7 @@ class ReolinkFeedManager:
 
         item.snapshot_url = f"/local/{relative.as_posix()}"
         self._schedule_save()
+        await self._async_refresh_item_asset_size(item)
         await self._async_enforce_storage_limit()
 
     async def _async_find_recording_media_content_id(self, item: DetectionItem) -> str | None:
@@ -797,6 +833,7 @@ class ReolinkFeedManager:
         relative = _recording_relative_path_for_item(item)
         absolute = self._www_root / relative
         if absolute.exists():
+            await self._async_refresh_item_asset_size(item)
             return f"/local/{relative.as_posix()}"
 
         try:
@@ -834,6 +871,7 @@ class ReolinkFeedManager:
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to persist recording cache (%s): %s", item.id, err)
             return None
+        await self._async_refresh_item_asset_size(item)
         await self._async_enforce_storage_limit()
         return f"/local/{relative.as_posix()}"
 
