@@ -87,6 +87,16 @@ class ReolinkFeedCard extends HTMLElement {
     this._configuredLabels = [];
     this._filtersInitialized = false;
     this._infoDialog = { open: false, itemId: "" };
+    this._handleDialogKeyDown = (ev) => {
+      if (!this._infoDialog.open) return;
+      if (ev.key === "ArrowLeft") {
+        ev.preventDefault();
+        this._openPreviousInfoItem();
+      } else if (ev.key === "ArrowRight") {
+        ev.preventDefault();
+        this._openNextInfoItem();
+      }
+    };
     this.attachShadow({ mode: "open" });
   }
 
@@ -284,12 +294,35 @@ class ReolinkFeedCard extends HTMLElement {
   _openInfoDialog(item) {
     if (!item?.id) return;
     this._infoDialog = { open: true, itemId: item.id };
+    window.addEventListener("keydown", this._handleDialogKeyDown);
     this._render();
   }
 
   _closeInfoDialog() {
     this._infoDialog = { open: false, itemId: "" };
+    window.removeEventListener("keydown", this._handleDialogKeyDown);
     this._render();
+  }
+
+  _currentInfoItemIndex() {
+    if (!this._infoDialog.open) return -1;
+    return this._items.findIndex((item) => item.id === this._infoDialog.itemId);
+  }
+
+  _openPreviousInfoItem() {
+    const idx = this._currentInfoItemIndex();
+    if (idx <= 0) return;
+    const prevItem = this._items[idx - 1];
+    if (!prevItem) return;
+    this._openInfoDialog(prevItem);
+  }
+
+  _openNextInfoItem() {
+    const idx = this._currentInfoItemIndex();
+    if (idx < 0 || idx >= this._items.length - 1) return;
+    const nextItem = this._items[idx + 1];
+    if (!nextItem) return;
+    this._openInfoDialog(nextItem);
   }
 
   async _deleteItem(item) {
@@ -521,7 +554,21 @@ class ReolinkFeedCard extends HTMLElement {
       <ha-dialog open scrimClickAction="close" escapeKeyAction="close">
         <div class="info-head">
           <span>${this._t("detection_info")}</span>
-          <button class="close-info-top" type="button" aria-label="${this._t("close_info_dialog")}">✕</button>
+          <div class="info-head-actions">
+            <button
+              class="nav-info prev-info"
+              type="button"
+              aria-label="${this._t("previous")}"
+              ${this._currentInfoItemIndex() <= 0 ? "disabled" : ""}
+            ><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+            <button
+              class="nav-info next-info"
+              type="button"
+              aria-label="${this._t("next")}"
+              ${this._currentInfoItemIndex() >= this._items.length - 1 ? "disabled" : ""}
+            ><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+            <button class="close-info-top" type="button" aria-label="${this._t("close_info_dialog")}">✕</button>
+          </div>
         </div>
         <div class="info-body">
           ${infoMediaHtml}
@@ -591,9 +638,29 @@ class ReolinkFeedCard extends HTMLElement {
         .info-links a:hover, .info-body a:hover { text-decoration: underline; }
         .info-video { width: 100%; max-height: 280px; border-radius: 8px; border: 1px solid var(--divider-color); background: #000; }
         .info-snapshot { width: 100%; max-height: 280px; object-fit: cover; border-radius: 8px; border: 1px solid var(--divider-color); }
-        .info-body .placeholder { width: 100%; height: 220px; border-radius: 8px; border: 1px solid var(--divider-color); display: grid; place-items: center; color: var(--secondary-text-color); background: rgba(255,255,255,0.03); font-size: 13px; }
+        .info-body .placeholder {
+          width: 100%;
+          max-width: 100%;
+          min-height: 220px;
+          border-radius: 8px;
+          border: 1px solid var(--divider-color);
+          display: grid;
+          place-items: center;
+          color: var(--secondary-text-color);
+          background: rgba(255,255,255,0.03);
+          font-size: 13px;
+          box-sizing: border-box;
+          overflow-wrap: anywhere;
+          text-align: center;
+          padding: 8px;
+        }
+        .info-head-actions { display: inline-flex; align-items: center; gap: 8px; }
         .close-info-top { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         .close-info-top:hover { background: var(--secondary-background-color); }
+        .nav-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+        .nav-info:hover { background: var(--secondary-background-color); }
+        .nav-info:disabled { opacity: 0.45; cursor: default; }
+        .nav-info ha-icon { --mdc-icon-size: 20px; }
         .reset-info, .delete-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 34px; padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
         .reset-info:hover { background: var(--secondary-background-color); }
         .reset-info.resolving { opacity: 0.7; }
@@ -658,6 +725,16 @@ class ReolinkFeedCard extends HTMLElement {
       ev.preventDefault();
       this._closeInfoDialog();
     });
+    const prevInfoButton = this.shadowRoot.querySelector("button.prev-info");
+    prevInfoButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      this._openPreviousInfoItem();
+    });
+    const nextInfoButton = this.shadowRoot.querySelector("button.next-info");
+    nextInfoButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      this._openNextInfoItem();
+    });
     const resetInfoButton = this.shadowRoot.querySelector("button.reset-info");
     resetInfoButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -671,6 +748,7 @@ class ReolinkFeedCard extends HTMLElement {
       this._deleteItem(infoItem);
     });
     const infoDialogEl = this.shadowRoot.querySelector("ha-dialog");
+    const dialogItemIdAtRender = infoItem?.id || "";
     const infoVideoEl = this.shadowRoot.querySelector("video.info-video");
     if (this._infoDialog.open && infoVideoEl) {
       const initialOffsetSeconds = 5;
@@ -703,12 +781,12 @@ class ReolinkFeedCard extends HTMLElement {
       }
     }
     infoDialogEl?.addEventListener("closed", () => {
-      if (this._infoDialog.open) {
+      if (this._infoDialog.open && this._infoDialog.itemId === dialogItemIdAtRender) {
         this._closeInfoDialog();
       }
     });
     infoDialogEl?.addEventListener("close", () => {
-      if (this._infoDialog.open) {
+      if (this._infoDialog.open && this._infoDialog.itemId === dialogItemIdAtRender) {
         this._closeInfoDialog();
       }
     });
