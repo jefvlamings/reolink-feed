@@ -29,11 +29,18 @@ from .const import (
     CARD_FILENAME,
     CARD_URL_PATH,
     CONF_ENABLED_LABELS,
+    CONF_MAX_DETECTIONS,
+    CONF_RETENTION_HOURS,
+    DEFAULT_RETENTION_HOURS,
+    DEFAULT_MAX_DETECTIONS,
     DEFAULT_ENABLED_DETECTION_LABELS,
     DOMAIN,
     LEGACY_LABEL_ALIASES,
     LIST_ITEMS_LIMIT,
-    RETENTION_HOURS,
+    MAX_MAX_DETECTIONS,
+    MAX_RETENTION_HOURS,
+    MIN_MAX_DETECTIONS,
+    MIN_RETENTION_HOURS,
     SUPPORTED_DETECTION_LABELS,
 )
 from .feed import ReolinkFeedManager
@@ -60,7 +67,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ReolinkFeedConfigEntry) -> bool:
     """Set up Reolink feed from a config entry."""
-    manager = ReolinkFeedManager(hass, _enabled_labels_from_entry(entry))
+    manager = ReolinkFeedManager(
+        hass,
+        _enabled_labels_from_entry(entry),
+        _retention_hours_from_entry(entry),
+        _max_detections_from_entry(entry),
+    )
     await manager.async_start()
     options_unsub = entry.add_update_listener(_async_reload_entry_on_update)
     entry.runtime_data = ReolinkFeedData(manager=manager, options_unsub=options_unsub)
@@ -249,7 +261,7 @@ async def ws_list_items(
     labels = requested or enabled_labels
 
     now_ts = dt_util.utcnow().timestamp()
-    since_seconds = RETENTION_HOURS * 3600
+    since_seconds = entry.runtime_data.manager.get_retention_hours() * 3600
     filtered = []
     for item in items:
         if item.label not in labels:
@@ -365,3 +377,21 @@ def _enabled_labels_from_entry(entry: ReolinkFeedConfigEntry) -> set[str]:
     if not normalized:
         return set(DEFAULT_ENABLED_DETECTION_LABELS)
     return normalized
+
+
+def _retention_hours_from_entry(entry: ReolinkFeedConfigEntry) -> int:
+    raw = entry.options.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_RETENTION_HOURS
+    return max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, value))
+
+
+def _max_detections_from_entry(entry: ReolinkFeedConfigEntry) -> int:
+    raw = entry.options.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_DETECTIONS
+    return max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, value))

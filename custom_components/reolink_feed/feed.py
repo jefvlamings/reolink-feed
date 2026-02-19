@@ -26,10 +26,14 @@ from homeassistant.util import slugify
 from .const import (
     CLEANUP_INTERVAL_SECONDS,
     DEFAULT_ENABLED_DETECTION_LABELS,
+    DEFAULT_MAX_DETECTIONS,
+    DEFAULT_RETENTION_HOURS,
     LEGACY_LABEL_ALIASES,
-    MAX_ITEMS,
+    MAX_MAX_DETECTIONS,
+    MAX_RETENTION_HOURS,
     MERGE_WINDOW_SECONDS,
-    RETENTION_HOURS,
+    MIN_MAX_DETECTIONS,
+    MIN_RETENTION_HOURS,
     RECORDING_DEFAULT_CLIP_DURATION_SECONDS,
     RECORDING_RETRY_DELAYS_SECONDS,
     RECORDING_WINDOW_END_PAD_SECONDS,
@@ -50,7 +54,13 @@ _CLIP_TITLE_PATTERN = re.compile(
 class ReolinkFeedManager:
     """Manage detection lifecycle and persistence."""
 
-    def __init__(self, hass: HomeAssistant, enabled_labels: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        enabled_labels: set[str] | None = None,
+        retention_hours: int | None = None,
+        max_detections: int | None = None,
+    ) -> None:
         self.hass = hass
         self._store = DetectionStore(hass)
         self._www_root = Path(hass.config.path("www"))
@@ -65,6 +75,8 @@ class ReolinkFeedManager:
         self._unsub_delayed_save: Callable[[], None] | None = None
         self._unsub_cleanup_timer: Callable[[], None] | None = None
         self._enabled_labels = self._normalize_enabled_labels(enabled_labels)
+        self._retention_hours = self._normalize_retention_hours(retention_hours)
+        self._max_detections = self._normalize_max_detections(max_detections)
 
     async def async_start(self) -> None:
         """Load initial state and begin listening."""
@@ -74,6 +86,9 @@ class ReolinkFeedManager:
             changed = True
         if await self.async_prune_expired_items():
             changed = True
+        trimmed = await self._async_trim_to_max_detections()
+        if trimmed:
+            changed = True
         self._rebuild_indexes()
         self._unsub_state_changed = self.hass.bus.async_listen(
             EVENT_STATE_CHANGED, self._async_handle_state_changed
@@ -81,6 +96,29 @@ class ReolinkFeedManager:
         self._schedule_cleanup()
         if changed:
             await self._store.async_save(self._items)
+
+    def _trim_to_max_detections(self) -> list[DetectionItem]:
+        if len(self._items) <= self._max_detections:
+            return []
+        removed = self._items[self._max_detections :]
+        self._items = self._items[: self._max_detections]
+        return removed
+
+    async def _async_trim_to_max_detections(self) -> int:
+        removed = self._trim_to_max_detections()
+        if not removed:
+            return 0
+        removed_ids = {item.id for item in removed}
+        for item_id in removed_ids:
+            self._cancel_recording_resolution(item_id)
+            snapshot_unsub = self._unsub_snapshot_timers.pop(item_id, None)
+            if snapshot_unsub:
+                snapshot_unsub()
+        await self._async_delete_snapshots_for_items(removed)
+        self._rebuild_indexes()
+        await self._store.async_save(self._items)
+        _LOGGER.info("Trimmed %s reolink feed items above max_detections=%s", len(removed), self._max_detections)
+        return len(removed)
 
     def _normalize_item_labels(self) -> bool:
         changed = False
@@ -119,12 +157,38 @@ class ReolinkFeedManager:
         """Return backend-enabled detection labels."""
         return set(self._enabled_labels)
 
+    def get_retention_hours(self) -> int:
+        """Return retention window in hours."""
+        return self._retention_hours
+
+    def get_max_detections(self) -> int:
+        """Return max retained detections."""
+        return self._max_detections
+
     def _normalize_enabled_labels(self, enabled_labels: set[str] | None) -> set[str]:
         if not enabled_labels:
             return set(DEFAULT_ENABLED_DETECTION_LABELS)
         normalized = {self._normalize_label(label) for label in enabled_labels}
         normalized = {label for label in normalized if label in SUPPORTED_DETECTION_LABELS}
         return normalized or set(DEFAULT_ENABLED_DETECTION_LABELS)
+
+    def _normalize_retention_hours(self, retention_hours: int | None) -> int:
+        if retention_hours is None:
+            return DEFAULT_RETENTION_HOURS
+        try:
+            value = int(retention_hours)
+        except (TypeError, ValueError):
+            value = DEFAULT_RETENTION_HOURS
+        return max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, value))
+
+    def _normalize_max_detections(self, max_detections: int | None) -> int:
+        if max_detections is None:
+            return DEFAULT_MAX_DETECTIONS
+        try:
+            value = int(max_detections)
+        except (TypeError, ValueError):
+            value = DEFAULT_MAX_DETECTIONS
+        return max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, value))
 
     def _normalize_label(self, label: str | None) -> str:
         lowered = str(label or "").strip().lower()
@@ -142,7 +206,7 @@ class ReolinkFeedManager:
 
     async def async_prune_expired_items(self) -> int:
         """Drop items older than retention window and remove their snapshots."""
-        cutoff = dt_util.utcnow() - timedelta(hours=RETENTION_HOURS)
+        cutoff = dt_util.utcnow() - timedelta(hours=self._retention_hours)
         kept: list[DetectionItem] = []
         removed: list[DetectionItem] = []
         for item in self._items:
@@ -214,7 +278,8 @@ class ReolinkFeedManager:
             self._items, rebuilt
         )
         merged.sort(key=lambda item: item.start_dt, reverse=True)
-        self._items = merged[:MAX_ITEMS]
+        self._items = merged
+        await self._async_trim_to_max_detections()
         self._rebuild_indexes()
         await self._store.async_save(self._items)
 
@@ -312,8 +377,16 @@ class ReolinkFeedManager:
         )
         self._items.insert(0, item)
         self._open_item_id_by_key[key] = item.id
-        if len(self._items) > MAX_ITEMS:
-            self._items = self._items[:MAX_ITEMS]
+        removed = self._trim_to_max_detections()
+        if removed:
+            removed_ids = {removed_item.id for removed_item in removed}
+            for removed_id in removed_ids:
+                self._cancel_recording_resolution(removed_id)
+                snapshot_unsub = self._unsub_snapshot_timers.pop(removed_id, None)
+                if snapshot_unsub:
+                    snapshot_unsub()
+            self._rebuild_indexes()
+            self.hass.async_create_task(self._async_delete_snapshots_for_items(removed))
         self._schedule_save()
         self._schedule_snapshot_capture(item.id, entity_id)
 
@@ -382,9 +455,8 @@ class ReolinkFeedManager:
             item.snapshot_url = snapshot_url
 
         self._items.insert(0, item)
-        if len(self._items) > MAX_ITEMS:
-            self._items = self._items[:MAX_ITEMS]
-        self._last_closed_item_id_by_key[(camera_name, label)] = item.id
+        await self._async_trim_to_max_detections()
+        self._last_closed_item_id_by_key[(camera_name, normalized_label)] = item.id
         self._schedule_save()
         self._schedule_recording_resolution(item.id)
         return item
@@ -785,7 +857,7 @@ class ReolinkFeedManager:
         except Exception as err:  # noqa: BLE001
             raise RuntimeError(f"Recorder history is unavailable: {err}") from err
 
-        since_dt = datetime.now().astimezone() - timedelta(hours=RETENTION_HOURS)
+        since_dt = datetime.now().astimezone() - timedelta(hours=self._retention_hours)
         built_items: list[DetectionItem] = []
         recorder = get_instance(self.hass)
 

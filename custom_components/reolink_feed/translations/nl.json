@@ -16,7 +16,9 @@
       "init": {
         "title": "Reolink Feed-opties",
         "data": {
-          "enabled_labels": "Ingeschakelde detecties"
+          "enabled_labels": "Ingeschakelde detecties",
+          "retention_hours": "Bewaartermijn (uren)",
+          "max_detections": "Maximum detecties"
         }
       }
     }

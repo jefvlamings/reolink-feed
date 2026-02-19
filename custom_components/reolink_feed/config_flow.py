@@ -4,9 +4,23 @@ from __future__ import annotations
 
 from homeassistant import config_entries
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import selector
 import voluptuous as vol
 
-from .const import CONF_ENABLED_LABELS, DEFAULT_ENABLED_DETECTION_LABELS, DOMAIN, SUPPORTED_DETECTION_LABELS
+from .const import (
+    CONF_ENABLED_LABELS,
+    CONF_MAX_DETECTIONS,
+    CONF_RETENTION_HOURS,
+    DEFAULT_ENABLED_DETECTION_LABELS,
+    DEFAULT_MAX_DETECTIONS,
+    DEFAULT_RETENTION_HOURS,
+    DOMAIN,
+    MAX_MAX_DETECTIONS,
+    MAX_RETENTION_HOURS,
+    MIN_MAX_DETECTIONS,
+    MIN_RETENTION_HOURS,
+    SUPPORTED_DETECTION_LABELS,
+)
 
 
 _LABEL_TITLES = {
@@ -60,7 +74,18 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             ]
             if not selected:
                 selected = list(DEFAULT_ENABLED_DETECTION_LABELS)
-            return self.async_create_entry(title="", data={CONF_ENABLED_LABELS: selected})
+            retention_hours = int(user_input.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS))
+            retention_hours = max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, retention_hours))
+            max_detections = int(user_input.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS))
+            max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_ENABLED_LABELS: selected,
+                    CONF_RETENTION_HOURS: retention_hours,
+                    CONF_MAX_DETECTIONS: max_detections,
+                },
+            )
 
         existing = self._config_entry.options.get(CONF_ENABLED_LABELS)
         if isinstance(existing, list):
@@ -69,6 +94,14 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
             default_labels = list(DEFAULT_ENABLED_DETECTION_LABELS)
         if not default_labels:
             default_labels = list(DEFAULT_ENABLED_DETECTION_LABELS)
+        retention_hours = int(
+            self._config_entry.options.get(CONF_RETENTION_HOURS, DEFAULT_RETENTION_HOURS)
+        )
+        retention_hours = max(MIN_RETENTION_HOURS, min(MAX_RETENTION_HOURS, retention_hours))
+        max_detections = int(
+            self._config_entry.options.get(CONF_MAX_DETECTIONS, DEFAULT_MAX_DETECTIONS)
+        )
+        max_detections = max(MIN_MAX_DETECTIONS, min(MAX_MAX_DETECTIONS, max_detections))
 
         return self.async_show_form(
             step_id="init",
@@ -76,6 +109,22 @@ class ReolinkFeedOptionsFlow(config_entries.OptionsFlow):
                 {
                     vol.Required(CONF_ENABLED_LABELS, default=default_labels): cv.multi_select(
                         self._label_options()
+                    ),
+                    vol.Required(CONF_RETENTION_HOURS, default=retention_hours): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=MIN_RETENTION_HOURS,
+                            max=MAX_RETENTION_HOURS,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(CONF_MAX_DETECTIONS, default=max_detections): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=MIN_MAX_DETECTIONS,
+                            max=MAX_MAX_DETECTIONS,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
                     ),
                 }
             ),
