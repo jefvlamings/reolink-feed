@@ -101,6 +101,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._configuredLabels = [];
     this._filtersInitialized = false;
     this._retentionHours = 24;
+    this._expandedClusterKey = "";
     this._infoDialog = { open: false, itemId: "" };
     this._videoControlsEnabled = new Set();
     this._ignoreDialogCloseEvents = 0;
@@ -317,6 +318,7 @@ class ReolinkFeedCard extends HTMLElement {
 
   async _openFromThumbnail(item) {
     if (!item?.id) return;
+    this._expandedClusterKey = "";
     this._openInfoDialog(item);
   }
 
@@ -832,6 +834,7 @@ class ReolinkFeedCard extends HTMLElement {
       const startTs = timelineStartTs;
       const endTs = nowTs;
       const range = endTs - startTs;
+      const clusterGapPercent = 2.4;
       const hourMarks = (() => {
         if (range <= 0) return "";
         const firstHour = new Date(startTs);
@@ -856,21 +859,73 @@ class ReolinkFeedCard extends HTMLElement {
         }
         return marks.join("");
       })();
-      const markers = timelineEntries
-        .map(({ item, ts }) => {
+      const clusteredEntries = (() => {
+        const buckets = [];
+        for (const { item, ts } of timelineEntries) {
           const ratio = range <= 0 ? 0.5 : (ts - startTs) / range;
           const left = Math.min(100, Math.max(0, ratio * 100));
-          const icon = this._labelIconName(item.label);
+          const current = buckets[buckets.length - 1];
+          if (!current || left - current.left > clusterGapPercent) {
+            buckets.push({
+              left,
+              items: [item],
+              minTs: ts,
+              maxTs: ts,
+            });
+            continue;
+          }
+          current.items.push(item);
+          current.minTs = Math.min(current.minTs, ts);
+          current.maxTs = Math.max(current.maxTs, ts);
+          const total = current.items.length;
+          current.left = (current.left * (total - 1) + left) / total;
+        }
+        return buckets;
+      })();
+      const markers = clusteredEntries
+        .map((cluster) => {
+          const items = [...cluster.items].sort(
+            (a, b) => new Date(b.start_ts).getTime() - new Date(a.start_ts).getTime(),
+          );
+          const ids = items.map((item) => item.id).join(",");
+          const isCluster = items.length > 1;
+          const markerLabel = isCluster ? String(items.length) : "";
+          const icon = this._labelIconName(items[0].label);
+          const title = isCluster
+            ? `${items.length} detections (${this._formatDateTime(new Date(cluster.minTs).toISOString())} - ${this._formatDateTime(new Date(cluster.maxTs).toISOString())})`
+            : this._formatDateTime(items[0].start_ts);
+          const expandedHtml =
+            isCluster && this._expandedClusterKey === ids
+              ? `
+                <div class="timeline-cluster-expanded" style="left:${cluster.left}%">
+                  ${items
+                    .map(
+                      (entry) => `
+                        <button
+                          class="timeline-expanded-item"
+                          data-timeline-id="${entry.id}"
+                          title="${this._formatDateTime(entry.start_ts)}"
+                          aria-label="${this._formatDateTime(entry.start_ts)}"
+                        >
+                          <ha-icon icon="${this._labelIconName(entry.label)}"></ha-icon>
+                        </button>
+                      `,
+                    )
+                    .join("")}
+                  <button class="timeline-expanded-close" type="button" aria-label="${this._t("close_info_dialog")}">✕</button>
+                </div>
+              `
+              : "";
           return `
-            <span class="timeline-marker-stem" style="left:${left}%"></span>
+            ${expandedHtml}
             <button
-              class="timeline-marker"
-              data-timeline-id="${item.id}"
-              style="left:${left}%"
-              title="${this._formatDateTime(item.start_ts)}"
-              aria-label="${this._formatDateTime(item.start_ts)}"
+              class="timeline-marker${isCluster ? " cluster" : ""}"
+              data-timeline-ids="${ids}"
+              style="left:${cluster.left}%"
+              title="${title}"
+              aria-label="${title}"
             >
-              <ha-icon icon="${icon}"></ha-icon>
+              ${isCluster ? `<span class="cluster-count">${markerLabel}</span>` : `<ha-icon icon="${icon}"></ha-icon>`}
             </button>
           `;
         })
@@ -974,20 +1029,28 @@ class ReolinkFeedCard extends HTMLElement {
       <style>
         :host { display: block; }
         ha-card { padding: 10px; }
-        .topbar { display: flex; justify-content: flex-start; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .topbar { display: flex; justify-content: flex-start; align-items: center; gap: 10px; margin-bottom: 18px; }
         .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .filter-pill { border: 1px solid rgba(255,255,255,0.22); background: transparent; color: var(--primary-text-color); border-radius: 999px; height: 30px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.55; }
         .filter-pill ha-icon { --mdc-icon-size: 14px; }
         .filter-pill.active { border-color: #fff; color: #fff; opacity: 1; }
         .filter-pill:hover { opacity: 0.9; background: rgba(255,255,255,0.08); }
-        .timeline { position: relative; height: 40px; margin: 4px 6px 12px; }
+        .timeline { position: relative; height: 40px; margin: 12px 6px 12px; }
         .timeline-track { position: absolute; left: 4px; right: 4px; top: 50%; transform: translateY(-50%); height: 2px; border-radius: 999px; background: rgba(255,255,255,0.3); }
         .timeline-hour-mark { position: absolute; top: 50%; transform: translateX(-50%); width: 1px; height: 8px; background: rgba(255,255,255,0.32); pointer-events: none; }
         .timeline-hour-label { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 9px; line-height: 1; color: rgba(255,255,255,0.55); font-variant-numeric: tabular-nums; }
-        .timeline-marker-stem { position: absolute; top: 50%; transform: translate(-50%, -9px); width: 1px; height: 9px; background: rgba(255,255,255,0.35); pointer-events: none; }
         .timeline-marker { position: absolute; top: calc(50% - 18px); transform: translate(-50%, -50%); width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(210,210,210,0.88); color: rgba(28,28,28,0.95); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+        .timeline-marker::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%); width: 1px; height: 9px; background: rgba(255,255,255,0.35); pointer-events: none; }
         .timeline-marker:hover { background: rgba(235,235,235,0.96); color: #111; }
         .timeline-marker ha-icon { --mdc-icon-size: 12px; pointer-events: none; }
+        .timeline-marker.cluster { font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .cluster-count { pointer-events: none; }
+        .timeline-cluster-expanded { position: absolute; top: calc(50% - 18px); transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 999px; background: rgba(20,20,20,0.85); border: 1px solid rgba(255,255,255,0.28); z-index: 5; }
+        .timeline-expanded-item { width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(210,210,210,0.96); color: rgba(28,28,28,0.95); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+        .timeline-expanded-item:hover { background: #fff; color: #111; }
+        .timeline-expanded-item ha-icon { --mdc-icon-size: 12px; pointer-events: none; }
+        .timeline-expanded-close { width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(255,255,255,0.16); color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; font-size: 12px; line-height: 1; }
+        .timeline-expanded-close:hover { background: rgba(255,255,255,0.28); }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
         .page-info { color: var(--secondary-text-color); font-size: 12px; min-width: 84px; text-align: center; }
         button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
@@ -1151,12 +1214,56 @@ class ReolinkFeedCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".timeline-marker").forEach((el) => {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
+        const idsRaw = el.getAttribute("data-timeline-ids") || "";
+        const ids = idsRaw
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean);
+        const id = ids[0];
+        if (!id) return;
+        if (ids.length > 1) {
+          const clusterKey = ids.join(",");
+          this._expandedClusterKey = this._expandedClusterKey === clusterKey ? "" : clusterKey;
+          this._render();
+          return;
+        }
+        const item = this._items.find((x) => x.id === id);
+        if (!item) return;
+        this._openFromThumbnail(item);
+      });
+    });
+    this.shadowRoot.querySelectorAll(".timeline-expanded-item").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
         const id = el.getAttribute("data-timeline-id");
         if (!id) return;
         const item = this._items.find((x) => x.id === id);
         if (!item) return;
         this._openFromThumbnail(item);
       });
+    });
+    this.shadowRoot.querySelectorAll(".timeline-expanded-close").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._expandedClusterKey = "";
+        this._render();
+      });
+    });
+    const cardEl = this.shadowRoot.querySelector("ha-card");
+    cardEl?.addEventListener("click", (ev) => {
+      if (!this._expandedClusterKey) return;
+      const path = ev.composedPath();
+      const clickedTimelineOverlay = path.some(
+        (node) =>
+          node instanceof Element &&
+          (node.classList.contains("timeline-marker") ||
+            node.classList.contains("timeline-cluster-expanded") ||
+            node.classList.contains("timeline-expanded-item")),
+      );
+      if (clickedTimelineOverlay) return;
+      this._expandedClusterKey = "";
+      this._render();
     });
 
     this.shadowRoot.querySelectorAll("button.page-nav").forEach((el) => {
