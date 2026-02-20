@@ -589,12 +589,23 @@ class ReolinkFeedManager:
         if recording.get("status") == "linked" and isinstance(local_url, str) and local_url:
             return recording
 
+        _LOGGER.debug(
+            "Resolving recording for item %s (camera=%s label=%s start=%s end=%s final_attempt=%s)",
+            item.id,
+            item.camera_name,
+            item.label,
+            item.start_ts,
+            item.end_ts,
+            final_attempt,
+        )
         media_content_id = await self._async_find_recording_media_content_id(item)
+        cache_error: str | None = None
         if media_content_id:
-            local_url = (
+            _LOGGER.debug("Matched media content id for item %s: %s", item.id, media_content_id)
+            local_url, cache_error = (
                 await self._async_cache_recording_file(item, media_content_id)
                 if item.end_ts is not None
-                else None
+                else (None, "open_item")
             )
             if local_url:
                 item.recording = {
@@ -604,12 +615,26 @@ class ReolinkFeedManager:
                 }
                 self._cancel_recording_resolution(item.id)
                 self._schedule_save()
+                _LOGGER.debug("Recording cached for item %s: %s", item.id, local_url)
                 return item.recording
+            _LOGGER.debug(
+                "Failed to cache matched media content for item %s (media_content_id=%s reason=%s)",
+                item.id,
+                media_content_id,
+                cache_error or "-",
+            )
 
         if final_attempt:
-            item.recording = {"status": "not_found"}
+            if media_content_id:
+                item.recording = {
+                    "status": "download_failed",
+                    "error": cache_error or "download_failed",
+                }
+            else:
+                item.recording = {"status": "not_found"}
             self._cancel_recording_resolution(item.id)
             self._schedule_save()
+            _LOGGER.debug("Recording resolve final result for item %s: %s", item.id, item.recording)
             return item.recording
 
         item.recording = {"status": "pending"}
@@ -712,6 +737,15 @@ class ReolinkFeedManager:
             end_dt.date(),
             window_end.date(),
         }
+        _LOGGER.debug(
+            "Browse lookup for item %s (camera=%s label=%s days=%s window=%s..%s)",
+            item.id,
+            item.camera_name,
+            item.label,
+            sorted(str(day) for day in day_candidates),
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
         try:
             root = await async_browse_media(self.hass, "media-source://reolink")
         except (BrowseError, HomeAssistantError) as err:
@@ -720,7 +754,14 @@ class ReolinkFeedManager:
 
         camera_node = _select_camera_node(root.children or [], item.camera_name)
         if camera_node is None or not camera_node.media_content_id:
+            _LOGGER.debug("No camera node found for item %s (camera=%s)", item.id, item.camera_name)
             return None
+        _LOGGER.debug(
+            "Selected camera node for item %s: title=%s media_content_id=%s",
+            item.id,
+            getattr(camera_node, "title", ""),
+            camera_node.media_content_id,
+        )
 
         try:
             resolution_root = await async_browse_media(self.hass, camera_node.media_content_id)
@@ -735,7 +776,14 @@ class ReolinkFeedManager:
 
         resolution_node = _select_low_resolution_node(resolution_root.children or [])
         if resolution_node is None or not resolution_node.media_content_id:
+            _LOGGER.debug("No low-resolution node found for item %s", item.id)
             return None
+        _LOGGER.debug(
+            "Selected resolution node for item %s: title=%s media_content_id=%s",
+            item.id,
+            getattr(resolution_node, "title", ""),
+            resolution_node.media_content_id,
+        )
 
         try:
             days_root = await async_browse_media(self.hass, resolution_node.media_content_id)
@@ -749,7 +797,8 @@ class ReolinkFeedManager:
             return None
 
         day_nodes = _select_day_nodes(days_root.children or [], day_candidates)
-        best: tuple[float, float, str] | None = None
+        _LOGGER.debug("Found %s candidate day nodes for item %s", len(day_nodes), item.id)
+        best: tuple[int, int, int, float, float, float, str] | None = None
         for day_node, day in day_nodes:
             if not day_node.media_content_id:
                 continue
@@ -800,19 +849,63 @@ class ReolinkFeedManager:
                 clip_start, clip_end = clip
                 overlap = _overlap_seconds(window_start, window_end, clip_start, clip_end)
                 start_distance = abs((clip_start - start_dt).total_seconds())
-                score = (overlap, -start_distance, child.media_content_id)
+                contains_start = int(clip_start <= start_dt <= clip_end)
+                contains_interval = int(clip_start <= start_dt and clip_end >= end_dt)
+                early_start_seconds = max(0.0, (start_dt - clip_start).total_seconds())
+                early_start_bonus = int(0.0 <= early_start_seconds <= 10.0)
+                late_start_seconds = max(0.0, (clip_start - start_dt).total_seconds())
+                score = (
+                    contains_start,
+                    contains_interval,
+                    early_start_bonus,
+                    overlap,
+                    -late_start_seconds,
+                    -start_distance,
+                    child.media_content_id,
+                )
+                _LOGGER.debug(
+                    "Clip candidate for item %s: title=%s start=%s end=%s contains_start=%s contains_interval=%s early_bonus=%s overlap=%.1f late_start=%.1f start_delta=%.1f",
+                    item.id,
+                    child.title or "",
+                    clip_start.isoformat(),
+                    clip_end.isoformat(),
+                    contains_start,
+                    contains_interval,
+                    early_start_bonus,
+                    overlap,
+                    late_start_seconds,
+                    start_distance,
+                )
                 if best is None or score > best:
                     best = score
 
         if best is None:
+            _LOGGER.debug("No matching clip candidate found for item %s", item.id)
             return None
-        if best[0] <= 0:
+        if best[3] <= 0:
             # If no overlap, only accept a near-start match within padded window.
-            nearest = -best[1]
+            nearest = -best[5]
             max_nearest = RECORDING_WINDOW_START_PAD_SECONDS + RECORDING_WINDOW_END_PAD_SECONDS
             if nearest > max_nearest:
+                _LOGGER.debug(
+                    "Best clip rejected for item %s: overlap=0 nearest_start=%.1fs max_nearest=%ss",
+                    item.id,
+                    nearest,
+                    max_nearest,
+                )
                 return None
-        return best[2]
+        _LOGGER.debug(
+            "Selected clip for item %s: media_content_id=%s contains_start=%s contains_interval=%s early_bonus=%s overlap=%.1fs late_start=%.1fs start_delta=%.1fs",
+            item.id,
+            best[6],
+            best[0],
+            best[1],
+            best[2],
+            best[3],
+            -best[4],
+            -best[5],
+        )
+        return best[6]
 
     async def _async_cache_recordings_for_items(self, items: list[DetectionItem]) -> None:
         eligible_items = [
@@ -833,12 +926,12 @@ class ReolinkFeedManager:
 
     async def _async_cache_recording_file(
         self, item: DetectionItem, media_content_id: str
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         relative = _recording_relative_path_for_item(item)
         absolute = self._www_root / relative
         if absolute.exists():
             await self._async_refresh_item_asset_size(item)
-            return f"/local/{relative.as_posix()}"
+            return f"/local/{relative.as_posix()}", None
 
         try:
             resolved = await async_resolve_media(
@@ -846,21 +939,30 @@ class ReolinkFeedManager:
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to resolve media for local cache (%s): %s", item.id, err)
-            return None
+            return None, "resolve_failed"
 
         media_url = self._make_absolute_ha_url(self._sign_ha_path_if_needed(resolved.url))
         if not media_url:
-            return None
+            return None, "invalid_url"
 
         session = async_get_clientsession(self.hass, verify_ssl=False)
         payload: bytes | None = None
+        last_error: str | None = None
         for attempt, delay_s in enumerate(_CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS, start=1):
             if delay_s > 0:
                 await asyncio.sleep(delay_s)
             try:
                 async with session.get(media_url, timeout=120) as response:
                     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-                    if response.status >= 400 or (content_type and content_type != "video/mp4"):
+                    # Reolink playback proxies often return octet-stream for MP4 downloads.
+                    # Reject clear HTML/text error payloads, but accept binary stream content types.
+                    is_text_or_html = content_type.startswith("text/") or "html" in content_type
+                    if response.status >= 400 or is_text_or_html:
+                        last_error = (
+                            f"http_{response.status}"
+                            if response.status >= 400
+                            else f"content_type_{content_type or 'unknown'}"
+                        )
                         _LOGGER.debug(
                             "Recording cache download failed (%s) attempt %s/%s: HTTP %s content-type=%s",
                             item.id,
@@ -872,6 +974,7 @@ class ReolinkFeedManager:
                         continue
                     payload = await response.read()
             except (ClientError, TimeoutError) as err:
+                last_error = "request_error"
                 _LOGGER.debug(
                     "Recording cache download error (%s) attempt %s/%s: %s",
                     item.id,
@@ -884,16 +987,16 @@ class ReolinkFeedManager:
                 break
 
         if not payload:
-            return None
+            return None, last_error or "empty_payload"
 
         try:
             await self.hass.async_add_executor_job(_write_snapshot_file, absolute, payload)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to persist recording cache (%s): %s", item.id, err)
-            return None
+            return None, "persist_failed"
         await self._async_refresh_item_asset_size(item)
         await self._async_enforce_storage_limit()
-        return f"/local/{relative.as_posix()}"
+        return f"/local/{relative.as_posix()}", None
 
     def _sign_ha_path_if_needed(self, url: str) -> str:
         if not url.startswith("/"):

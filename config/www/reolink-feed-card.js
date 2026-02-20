@@ -37,6 +37,8 @@ const CARD_I18N = {
     close_info_dialog: "Close info dialog",
     snapshot: "Snapshot",
     page_size: "Items per page",
+    not_found: "Not found",
+    download_failed: "Download failed",
   },
   nl: {
     person: "Persoon",
@@ -68,6 +70,8 @@ const CARD_I18N = {
     close_info_dialog: "Sluit detectiedialoog",
     snapshot: "Snapshot",
     page_size: "Items per pagina",
+    not_found: "Niet gevonden",
+    download_failed: "Download mislukt",
   },
 };
 
@@ -87,6 +91,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._configuredLabels = [];
     this._filtersInitialized = false;
     this._infoDialog = { open: false, itemId: "" };
+    this._ignoreDialogCloseEvents = 0;
     this._handleDialogKeyDown = (ev) => {
       if (!this._infoDialog.open) return;
       if (ev.key === "ArrowLeft") {
@@ -259,6 +264,11 @@ class ReolinkFeedCard extends HTMLElement {
 
   async _refreshRecording(item, showToast = true, showSpinner = true) {
     if (!this._hass || !item?.id) return item?.recording || null;
+    const keepDialogOpenForItem =
+      this._infoDialog.open && this._infoDialog.itemId === item.id;
+    if (keepDialogOpenForItem && showSpinner) {
+      this._ignoreDialogCloseEvents = 2;
+    }
     if (showSpinner) {
       this._resolvingIds.add(item.id);
       this._render();
@@ -272,6 +282,7 @@ class ReolinkFeedCard extends HTMLElement {
       if (showToast) {
         if (recording.status === "linked") this._showToast("Recording linked");
         else if (recording.status === "not_found") this._showToast("Recording not found");
+        else if (recording.status === "download_failed") this._showToast("Recording download failed");
         else this._showToast("Recording still pending");
       }
       return recording;
@@ -532,10 +543,17 @@ class ReolinkFeedCard extends HTMLElement {
       : null;
     const infoFileHref = infoItem ? this._recordingLinkHref(infoItem) : "";
     const infoFileName = infoItem ? this._recordingFilename(infoItem) : "";
+    const infoRecordingStatus = infoItem?.recording?.status || "pending";
+    const infoRecordingFallbackText =
+      infoRecordingStatus === "not_found"
+        ? this._t("not_found")
+        : infoRecordingStatus === "download_failed"
+          ? this._t("download_failed")
+          : "-";
     const infoFileLinkHtml =
       infoItem && infoFileHref && infoFileHref !== "#"
         ? `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(infoItem)}">${infoFileName}</a>`
-        : `<span title="${infoItem ? this._mediaFileDisplayPath(infoItem) : ""}">${infoFileName}</span>`;
+        : `<span>${infoRecordingFallbackText}</span>`;
     const infoPhotoHref = infoItem ? this._snapshotLinkHref(infoItem) : "";
     const infoPhotoName = infoItem ? this._snapshotFilename(infoItem) : "";
     const infoPhotoLinkHtml =
@@ -781,11 +799,19 @@ class ReolinkFeedCard extends HTMLElement {
       }
     }
     infoDialogEl?.addEventListener("closed", () => {
+      if (this._ignoreDialogCloseEvents > 0) {
+        this._ignoreDialogCloseEvents -= 1;
+        return;
+      }
       if (this._infoDialog.open && this._infoDialog.itemId === dialogItemIdAtRender) {
         this._closeInfoDialog();
       }
     });
     infoDialogEl?.addEventListener("close", () => {
+      if (this._ignoreDialogCloseEvents > 0) {
+        this._ignoreDialogCloseEvents -= 1;
+        return;
+      }
       if (this._infoDialog.open && this._infoDialog.itemId === dialogItemIdAtRender) {
         this._closeInfoDialog();
       }
