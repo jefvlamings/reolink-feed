@@ -266,6 +266,7 @@ def test_build_linked_recording_includes_clip_timing_metadata() -> None:
         event_start=event_start,
         media_content_id="media-source://reolink/FILE|abc",
         source_url="http://localhost:8123/api/reolink/video/abc",
+        media_title="10:25:58 0:00:30 Person",
     )
 
     assert recording["status"] == "linked"
@@ -275,6 +276,7 @@ def test_build_linked_recording_includes_clip_timing_metadata() -> None:
     assert recording["start_offset_s"] == 4.0
     assert recording["media_content_id"] == "media-source://reolink/FILE|abc"
     assert recording["source_url"] == "http://localhost:8123/api/reolink/video/abc"
+    assert recording["media_title"] == "10:25:58 0:00:30 Person"
 
 
 def test_recording_needs_event_timing_detection() -> None:
@@ -302,7 +304,7 @@ def test_should_force_recording_download_only_for_manual_linked_reset() -> None:
     )
 
 
-def test_recording_relative_path_uses_clip_start_and_duration_token() -> None:
+def test_recording_relative_path_uses_item_id_folder_layout() -> None:
     event_start = datetime(2026, 2, 20, 9, 26, 2, tzinfo=timezone.utc)
     item = DetectionItem(
         id="x",
@@ -315,12 +317,8 @@ def test_recording_relative_path_uses_clip_start_and_duration_token() -> None:
         snapshot_url=None,
         recording={"status": "pending"},
     )
-    clip_start = datetime(2026, 2, 20, 10, 25, 25, tzinfo=timezone(timedelta(hours=1)))
-    clip_end = clip_start + timedelta(seconds=21)
-
-    relative = _recording_relative_path_for_item(item, clip_start=clip_start, clip_end=clip_end)
-
-    assert relative.as_posix().endswith("reolink_feed/deurbel/2026-02-20/102525_000021_person.mp4")
+    relative = _recording_relative_path_for_item(item)
+    assert relative.as_posix() == "reolink_feed/x/video.mp4"
 
     nodes = [
         SimpleNamespace(title="High Resolution", media_content_id="media-source://reolink/CAM|main"),

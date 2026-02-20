@@ -65,12 +65,15 @@ _CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS: tuple[float, ...] = (0.0, 2.0, 5.0)
 class RecordingMatch:
     """Matched Reolink clip metadata."""
 
-    __slots__ = ("media_content_id", "clip_start", "clip_end")
+    __slots__ = ("media_content_id", "clip_start", "clip_end", "media_title")
 
-    def __init__(self, media_content_id: str, clip_start: datetime, clip_end: datetime) -> None:
+    def __init__(
+        self, media_content_id: str, clip_start: datetime, clip_end: datetime, media_title: str
+    ) -> None:
         self.media_content_id = media_content_id
         self.clip_start = clip_start
         self.clip_end = clip_end
+        self.media_title = media_title
 
 
 class ReolinkFeedManager:
@@ -631,6 +634,7 @@ class ReolinkFeedManager:
                     event_start=item.start_dt,
                     media_content_id=match.media_content_id,
                     source_url=cached_source_url,
+                    media_title=match.media_title,
                 )
                 self._schedule_save()
                 return item.recording
@@ -673,6 +677,7 @@ class ReolinkFeedManager:
                     event_start=item.start_dt,
                     media_content_id=match.media_content_id,
                     source_url=cached_source_url,
+                    media_title=match.media_title,
                 )
                 self._cancel_recording_resolution(item.id)
                 self._schedule_save()
@@ -763,11 +768,7 @@ class ReolinkFeedManager:
             )
             return
 
-        started_local = item.start_dt.astimezone()
-        camera_slug = slugify(item.camera_name) or "camera"
-        day_folder = started_local.strftime("%Y-%m-%d")
-        filename = f"{started_local.strftime('%H%M%S')}_{item.label}.jpg"
-        relative = Path("reolink_feed") / camera_slug / day_folder / filename
+        relative = _snapshot_relative_path_for_item(item)
         absolute = self._www_root / relative
 
         try:
@@ -952,7 +953,9 @@ class ReolinkFeedManager:
                     debug_logged += 1
                 else:
                     debug_suppressed += 1
-                candidate_match = RecordingMatch(child.media_content_id, clip_start, clip_end)
+                candidate_match = RecordingMatch(
+                    child.media_content_id, clip_start, clip_end, child.title or ""
+                )
                 if best is None or score > best[0]:
                     best = (score, candidate_match)
 
@@ -1111,11 +1114,7 @@ class ReolinkFeedManager:
         return f"{base}{url}"
 
     async def _async_write_dummy_snapshot(self, item: DetectionItem) -> str:
-        started_local = item.start_dt.astimezone()
-        camera_slug = slugify(item.camera_name) or "camera"
-        day_folder = started_local.strftime("%Y-%m-%d")
-        filename = f"{started_local.strftime('%H%M%S')}_{item.label}_mock.svg"
-        relative = Path("reolink_feed") / camera_slug / day_folder / filename
+        relative = _mock_snapshot_relative_path_for_item(item)
         absolute = self._www_root / relative
         await self.hass.async_add_executor_job(
             _write_dummy_svg_file, absolute, item.camera_name, item.label, item.start_ts
@@ -1569,6 +1568,7 @@ def _build_linked_recording(
     event_start: datetime,
     media_content_id: str | None = None,
     source_url: str | None = None,
+    media_title: str | None = None,
 ) -> dict[str, Any]:
     """Build linked recording payload with clip timing metadata."""
     payload = {
@@ -1583,6 +1583,8 @@ def _build_linked_recording(
         payload["media_content_id"] = media_content_id
     if source_url:
         payload["source_url"] = source_url
+    if media_title:
+        payload["media_title"] = media_title
     return payload
 
 
@@ -1692,21 +1694,17 @@ def _cached_recording_paths_for_item(www_root: Path, item: DetectionItem) -> lis
 def _recording_relative_path_for_item(
     item: DetectionItem, *, clip_start: datetime | None = None, clip_end: datetime | None = None
 ) -> Path:
-    started_local = (clip_start or item.start_dt).astimezone()
-    camera_slug = slugify(item.camera_name) or "camera"
-    day_folder = started_local.strftime("%Y-%m-%d")
-    clip_duration_s = max(1, int((clip_end - clip_start).total_seconds())) if clip_start and clip_end else None
-    duration_token = _duration_seconds_to_token(clip_duration_s or item.duration_s or 0)
-    filename = f"{started_local.strftime('%H%M%S')}_{duration_token}_{item.label}.mp4"
-    return Path("reolink_feed") / camera_slug / day_folder / filename
+    _ = clip_start
+    _ = clip_end
+    return Path("reolink_feed") / item.id / "video.mp4"
 
 
-def _duration_seconds_to_token(total_seconds: int | float | None) -> str:
-    seconds = max(0, int(total_seconds or 0))
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    return f"{hours:02d}{minutes:02d}{secs:02d}"
+def _snapshot_relative_path_for_item(item: DetectionItem) -> Path:
+    return Path("reolink_feed") / item.id / "snapshot.jpg"
+
+
+def _mock_snapshot_relative_path_for_item(item: DetectionItem) -> Path:
+    return Path("reolink_feed") / item.id / "snapshot_mock.svg"
 
 
 def _candidate_legacy_snapshot_roots(hass: HomeAssistant) -> list[Path]:
