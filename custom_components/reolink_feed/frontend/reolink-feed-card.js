@@ -492,7 +492,9 @@ class ReolinkFeedCard extends HTMLElement {
     const currentItem = this._currentInfoItem();
     const requestedOffset = Number(currentItem?.recording?.start_offset_s);
     const initialOffsetSeconds =
-      Number.isFinite(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
+      Number.isFinite(requestedOffset) && requestedOffset >= 0
+        ? Math.max(0, requestedOffset - 2)
+        : 0;
     let initialSeekApplied = false;
     const applyInitialSeek = () => {
       if (initialSeekApplied) return;
