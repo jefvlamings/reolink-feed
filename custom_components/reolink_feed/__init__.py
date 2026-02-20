@@ -293,6 +293,7 @@ async def ws_list_items(
         {
             "items": filtered,
             "enabled_labels": sorted(enabled_labels),
+            "retention_hours": entry.runtime_data.manager.get_retention_hours(),
         },
     )
 

@@ -32,6 +32,7 @@ const CARD_I18N = {
     page: "Page",
     open_recording_preview: "Open recording preview",
     show_detection_info: "Show detection info",
+    show_timeline: "Show timeline",
     recording_preview: "Recording preview",
     close: "Close",
     close_info_dialog: "Close info dialog",
@@ -69,6 +70,7 @@ const CARD_I18N = {
     page: "Pagina",
     open_recording_preview: "Open opnamevoorbeeld",
     show_detection_info: "Toon detectie-info",
+    show_timeline: "Toon tijdlijn",
     recording_preview: "Opnamevoorbeeld",
     close: "Sluiten",
     close_info_dialog: "Sluit detectiedialoog",
@@ -98,6 +100,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._activeLabels = new Set();
     this._configuredLabels = [];
     this._filtersInitialized = false;
+    this._retentionHours = 24;
     this._infoDialog = { open: false, itemId: "" };
     this._videoControlsEnabled = new Set();
     this._ignoreDialogCloseEvents = 0;
@@ -120,6 +123,7 @@ class ReolinkFeedCard extends HTMLElement {
       cameras: [],
       per_entity_changes: 400,
       page_size: 20,
+      show_timeline: true,
       ...config,
     };
     const rawLabels = Array.isArray(this._config.labels)
@@ -262,6 +266,10 @@ class ReolinkFeedCard extends HTMLElement {
         ...item,
         label: normalizeCardLabel(item.label),
       }));
+      const retentionHours = Number.parseInt(String(result?.retention_hours ?? ""), 10);
+      if (Number.isFinite(retentionHours) && retentionHours > 0) {
+        this._retentionHours = retentionHours;
+      }
       this._applyFilters();
     } catch (err) {
       this._error = err?.message || String(err);
@@ -796,6 +804,7 @@ class ReolinkFeedCard extends HTMLElement {
       return;
     }
 
+    const showTimeline = this._config.show_timeline !== false;
     const pagedItems = this._pagedItems();
     const totalPages = this._totalPages();
     const filterPills = this._availableLabels
@@ -810,6 +819,70 @@ class ReolinkFeedCard extends HTMLElement {
         `;
       })
       .join("");
+    const nowTs = Date.now();
+    const timelineHours = Number.isFinite(this._retentionHours) && this._retentionHours > 0
+      ? this._retentionHours
+      : 24;
+    const timelineStartTs = nowTs - timelineHours * 60 * 60 * 1000;
+    const timelineEntries = this._filteredItems
+      .map((item) => ({ item, ts: new Date(item.start_ts).getTime() }))
+      .filter((entry) => Number.isFinite(entry.ts))
+      .sort((a, b) => a.ts - b.ts);
+    const timelineHtml = (() => {
+      const startTs = timelineStartTs;
+      const endTs = nowTs;
+      const range = endTs - startTs;
+      const hourMarks = (() => {
+        if (range <= 0) return "";
+        const firstHour = new Date(startTs);
+        firstHour.setMinutes(0, 0, 0);
+        if (firstHour.getTime() < startTs) {
+          firstHour.setHours(firstHour.getHours() + 1);
+        }
+        const marks = [];
+        for (let ts = firstHour.getTime(); ts < endTs; ts += 60 * 60 * 1000) {
+          const ratio = (ts - startTs) / range;
+          const left = Math.min(100, Math.max(0, ratio * 100));
+          const hour24 = new Date(ts).getHours();
+          const hour12 = hour24 % 12 || 12;
+          const hourLabel = hour12 % 2 === 0 ? String(hour12) : "";
+          marks.push(
+            `
+              <span class="timeline-hour-mark" style="left:${left}%" title="${hourLabel}:00" aria-hidden="true">
+                <span class="timeline-hour-label">${hourLabel}</span>
+              </span>
+            `,
+          );
+        }
+        return marks.join("");
+      })();
+      const markers = timelineEntries
+        .map(({ item, ts }) => {
+          const ratio = range <= 0 ? 0.5 : (ts - startTs) / range;
+          const left = Math.min(100, Math.max(0, ratio * 100));
+          const icon = this._labelIconName(item.label);
+          return `
+            <span class="timeline-marker-stem" style="left:${left}%"></span>
+            <button
+              class="timeline-marker"
+              data-timeline-id="${item.id}"
+              style="left:${left}%"
+              title="${this._formatDateTime(item.start_ts)}"
+              aria-label="${this._formatDateTime(item.start_ts)}"
+            >
+              <ha-icon icon="${icon}"></ha-icon>
+            </button>
+          `;
+        })
+        .join("");
+      return `
+        <div class="timeline" role="list" aria-label="${this._t("event")}">
+          <div class="timeline-track"></div>
+          ${hourMarks}
+          ${markers}
+        </div>
+      `;
+    })();
     const listHtml = pagedItems
       .map((item) => {
         const image = item.snapshot_url
@@ -907,6 +980,14 @@ class ReolinkFeedCard extends HTMLElement {
         .filter-pill ha-icon { --mdc-icon-size: 14px; }
         .filter-pill.active { border-color: #fff; color: #fff; opacity: 1; }
         .filter-pill:hover { opacity: 0.9; background: rgba(255,255,255,0.08); }
+        .timeline { position: relative; height: 40px; margin: 4px 6px 12px; }
+        .timeline-track { position: absolute; left: 4px; right: 4px; top: 50%; transform: translateY(-50%); height: 2px; border-radius: 999px; background: rgba(255,255,255,0.3); }
+        .timeline-hour-mark { position: absolute; top: 50%; transform: translateX(-50%); width: 1px; height: 8px; background: rgba(255,255,255,0.32); pointer-events: none; }
+        .timeline-hour-label { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 9px; line-height: 1; color: rgba(255,255,255,0.55); font-variant-numeric: tabular-nums; }
+        .timeline-marker-stem { position: absolute; top: 50%; transform: translate(-50%, -9px); width: 1px; height: 9px; background: rgba(255,255,255,0.35); pointer-events: none; }
+        .timeline-marker { position: absolute; top: calc(50% - 18px); transform: translate(-50%, -50%); width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(210,210,210,0.88); color: rgba(28,28,28,0.95); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+        .timeline-marker:hover { background: rgba(235,235,235,0.96); color: #111; }
+        .timeline-marker ha-icon { --mdc-icon-size: 12px; pointer-events: none; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px; }
         .page-info { color: var(--secondary-text-color); font-size: 12px; min-width: 84px; text-align: center; }
         button.page-nav { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 28px; padding: 0 10px; cursor: pointer; font-size: 12px; }
@@ -1037,6 +1118,7 @@ class ReolinkFeedCard extends HTMLElement {
             ${filterPills}
           </div>
         </div>
+        ${showTimeline ? timelineHtml : ""}
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
         ${this._filteredItems.length ? `<ul>${listHtml}</ul>${paginationHtml}` : `<div class="empty">${this._t("no_detections")}</div>`}
       </ha-card>
@@ -1064,6 +1146,16 @@ class ReolinkFeedCard extends HTMLElement {
         const label = normalizeCardLabel(el.getAttribute("data-filter-label"));
         if (!SUPPORTED_CARD_LABELS.includes(label)) return;
         this._toggleLabelFilter(label);
+      });
+    });
+    this.shadowRoot.querySelectorAll(".timeline-marker").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const id = el.getAttribute("data-timeline-id");
+        if (!id) return;
+        const item = this._items.find((x) => x.id === id);
+        if (!item) return;
+        this._openFromThumbnail(item);
       });
     });
 
@@ -1205,14 +1297,21 @@ class ReolinkFeedCardEditor extends HTMLElement {
     this._emitConfig(next);
   }
 
+  _onBooleanChange(key, checked) {
+    const next = { ...this._config, [key]: Boolean(checked) };
+    this._emitConfig(next);
+  }
+
   _render() {
     if (!this.shadowRoot) return;
     const pageSize = Number(this._config?.page_size ?? 20);
+    const showTimeline = this._config?.show_timeline !== false;
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
         .grid { display: grid; gap: 10px; }
         .field { display: grid; gap: 4px; }
+        .field.toggle { display: flex; align-items: center; justify-content: space-between; }
         label { color: var(--primary-text-color); font-size: 13px; }
         input[type="text"], input[type="number"] {
           border: 1px solid var(--divider-color);
@@ -1228,11 +1327,18 @@ class ReolinkFeedCardEditor extends HTMLElement {
           <label for="page_size">${this._t("page_size")}</label>
           <input id="page_size" type="number" min="1" max="100" value="${pageSize}" />
         </div>
+        <div class="field toggle">
+          <label for="show_timeline">${this._t("show_timeline")}</label>
+          <ha-switch id="show_timeline" ${showTimeline ? "checked" : ""}></ha-switch>
+        </div>
       </div>
     `;
 
     this.shadowRoot.querySelector("#page_size")?.addEventListener("change", (ev) => {
       this._onNumberChange("page_size", ev.target.value, 20);
+    });
+    this.shadowRoot.querySelector("#show_timeline")?.addEventListener("change", (ev) => {
+      this._onBooleanChange("show_timeline", ev.target.checked);
     });
   }
 }
