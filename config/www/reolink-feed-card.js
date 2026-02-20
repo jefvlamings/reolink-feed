@@ -41,6 +41,7 @@ const CARD_I18N = {
     download_failed: "Download failed",
     pending: "Pending",
     event: "Event",
+    tap_for_controls: "Tap for controls",
   },
   nl: {
     person: "Persoon",
@@ -76,6 +77,7 @@ const CARD_I18N = {
     download_failed: "Download mislukt",
     pending: "In behandeling",
     event: "Event",
+    tap_for_controls: "Tik voor bediening",
   },
 };
 
@@ -95,6 +97,7 @@ class ReolinkFeedCard extends HTMLElement {
     this._configuredLabels = [];
     this._filtersInitialized = false;
     this._infoDialog = { open: false, itemId: "" };
+    this._videoControlsEnabled = new Set();
     this._ignoreDialogCloseEvents = 0;
     this._handleDialogKeyDown = (ev) => {
       if (!this._infoDialog.open) return;
@@ -311,16 +314,19 @@ class ReolinkFeedCard extends HTMLElement {
     if (!item?.id) return;
     if (this._infoDialog.open) {
       this._infoDialog.itemId = item.id;
+      this._videoControlsEnabled.delete(item.id);
       this._updateInfoDialogInPlace();
       return;
     }
     this._infoDialog = { open: true, itemId: item.id };
+    this._videoControlsEnabled.delete(item.id);
     window.addEventListener("keydown", this._handleDialogKeyDown);
     this._render();
   }
 
   _closeInfoDialog() {
     this._infoDialog = { open: false, itemId: "" };
+    this._videoControlsEnabled.clear();
     window.removeEventListener("keydown", this._handleDialogKeyDown);
     this._render();
   }
@@ -341,6 +347,7 @@ class ReolinkFeedCard extends HTMLElement {
     const prevItem = this._items[idx - 1];
     if (!prevItem) return;
     this._infoDialog.itemId = prevItem.id;
+    this._videoControlsEnabled.delete(prevItem.id);
     this._updateInfoDialogInPlace();
   }
 
@@ -350,6 +357,7 @@ class ReolinkFeedCard extends HTMLElement {
     const nextItem = this._items[idx + 1];
     if (!nextItem) return;
     this._infoDialog.itemId = nextItem.id;
+    this._videoControlsEnabled.delete(nextItem.id);
     this._updateInfoDialogInPlace();
   }
 
@@ -441,6 +449,10 @@ class ReolinkFeedCard extends HTMLElement {
     return `${this._formatDate(start.toISOString())} ${this._formatTime(start.toISOString())} - ${this._formatTime(end.toISOString())}`;
   }
 
+  _videoControlsActive(item) {
+    return Boolean(item?.id) && this._videoControlsEnabled.has(item.id);
+  }
+
   _infoHeaderTitle(item) {
     if (!item) return this._t("detection_info");
     return `${item.camera_name || "-"} - ${this._formatWeekdayAndTime(item.start_ts) || "-"} (${this._formatDuration(item.duration_s)})`;
@@ -472,11 +484,15 @@ class ReolinkFeedCard extends HTMLElement {
   }
 
   _buildInfoMediaHtml(item) {
+    const controlsActive = this._videoControlsActive(item);
     return `
       <div class="info-media-frame">
         ${
           item && item.recording?.local_url
-            ? `<video class="info-video" controls autoplay muted playsinline preload="auto" src="${item.recording.local_url}"></video>`
+            ? `
+              <video class="info-video" ${controlsActive ? "controls" : ""} autoplay muted playsinline preload="auto" src="${item.recording.local_url}"></video>
+              ${controlsActive ? "" : `<div class="video-tap-hint">${this._t("tap_for_controls")}</div>`}
+            `
             : item && item.snapshot_url
               ? `<img class="info-snapshot" src="${item.snapshot_url}" alt="${item.camera_name || this._t("snapshot")}" loading="lazy" />`
               : `<div class="placeholder">${this._t("no_snapshot")}</div>`
@@ -490,6 +506,7 @@ class ReolinkFeedCard extends HTMLElement {
     const infoVideoEl = this.shadowRoot?.querySelector("video.info-video");
     if (!infoVideoEl) return;
     const currentItem = this._currentInfoItem();
+    if (!currentItem?.id) return;
     const requestedOffset = Number(currentItem?.recording?.start_offset_s);
     const initialOffsetSeconds =
       Number.isFinite(requestedOffset) && requestedOffset >= 0
@@ -513,19 +530,39 @@ class ReolinkFeedCard extends HTMLElement {
       }
     };
     infoVideoEl.muted = true;
+    infoVideoEl.defaultMuted = true;
+    infoVideoEl.volume = 0;
     infoVideoEl.playsInline = true;
     infoVideoEl.preload = "auto";
+    infoVideoEl.setAttribute("muted", "");
+    infoVideoEl.setAttribute("playsinline", "");
+    infoVideoEl.setAttribute("autoplay", "");
     if (infoVideoEl.readyState >= 1) {
       applyInitialSeek();
     } else {
       infoVideoEl.addEventListener("loadedmetadata", applyInitialSeek, { once: true });
     }
+    const attemptPlay = () => {
+      const playPromise = infoVideoEl.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => {
+          // Autoplay may still be blocked by browser policy or power-saving mode.
+        });
+      }
+    };
     infoVideoEl.load();
-    const playPromise = infoVideoEl.play();
-    if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch(() => {
-        // Autoplay may be blocked by browser policy; keep controls for manual start.
-      });
+    attemptPlay();
+    infoVideoEl.addEventListener("loadeddata", attemptPlay, { once: true });
+    infoVideoEl.addEventListener("canplay", attemptPlay, { once: true });
+    if (!this._videoControlsActive(currentItem)) {
+      const enableControls = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._videoControlsEnabled.add(currentItem.id);
+        this._updateInfoDialogInPlace();
+      };
+      infoVideoEl.addEventListener("click", enableControls, { once: true });
+      infoVideoEl.addEventListener("touchstart", enableControls, { once: true, passive: false });
     }
   }
 
@@ -842,6 +879,19 @@ class ReolinkFeedCard extends HTMLElement {
         }
         .info-video { background: #000; object-fit: contain; }
         .info-snapshot { object-fit: cover; }
+        .video-tap-hint {
+          position: absolute;
+          right: 10px;
+          bottom: 10px;
+          z-index: 4;
+          color: #fff;
+          background: rgba(0, 0, 0, 0.55);
+          border: 1px solid rgba(255,255,255,0.2);
+          border-radius: 999px;
+          font-size: 12px;
+          padding: 4px 10px;
+          pointer-events: none;
+        }
         .info-body .placeholder {
           display: grid;
           place-items: center;
