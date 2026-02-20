@@ -62,6 +62,17 @@ _CLIP_TITLE_PATTERN = re.compile(
 _CACHE_DOWNLOAD_RETRY_DELAYS_SECONDS: tuple[float, ...] = (0.0, 2.0, 5.0)
 
 
+class RecordingMatch:
+    """Matched Reolink clip metadata."""
+
+    __slots__ = ("media_content_id", "clip_start", "clip_end")
+
+    def __init__(self, media_content_id: str, clip_start: datetime, clip_end: datetime) -> None:
+        self.media_content_id = media_content_id
+        self.clip_start = clip_start
+        self.clip_end = clip_end
+
+
 class ReolinkFeedManager:
     """Manage detection lifecycle and persistence."""
 
@@ -247,9 +258,9 @@ class ReolinkFeedManager:
         changed = False
         for item in self._items:
             recording = item.recording or {}
-            if "media_content_id" in recording:
-                recording = dict(recording)
-                recording.pop("media_content_id", None)
+            # Migrate only invalid legacy payloads; keep useful metadata fields.
+            if not isinstance(recording, dict):
+                recording = {"status": "pending"}
                 item.recording = recording
                 changed = True
         return changed
@@ -587,8 +598,48 @@ class ReolinkFeedManager:
 
         recording = item.recording or {"status": "pending"}
         local_url = recording.get("local_url")
+        force_download = _should_force_recording_download(recording, final_attempt=final_attempt)
         if recording.get("status") == "linked" and isinstance(local_url, str) and local_url:
-            return recording
+            if not _recording_needs_event_timing(recording, force_refresh=final_attempt) and not force_download:
+                return recording
+            match = await self._async_find_recording_match(item)
+            if match is not None:
+                cached_source_url: str | None = None
+                if force_download:
+                    refreshed_local_url, refresh_cache_error, cached_source_url = (
+                        await self._async_cache_recording_file(
+                            item,
+                            match.media_content_id,
+                            force_download=True,
+                            clip_start=match.clip_start,
+                            clip_end=match.clip_end,
+                        )
+                    )
+                    if refreshed_local_url:
+                        local_url = refreshed_local_url
+                    else:
+                        _LOGGER.debug(
+                            "Forced recording refresh failed for item %s; keeping existing cache (reason=%s)",
+                            item.id,
+                            refresh_cache_error or "-",
+                        )
+                        return recording
+                item.recording = _build_linked_recording(
+                    local_url,
+                    clip_start=match.clip_start,
+                    clip_end=match.clip_end,
+                    event_start=item.start_dt,
+                    media_content_id=match.media_content_id,
+                    source_url=cached_source_url,
+                )
+                self._schedule_save()
+                return item.recording
+            if not isinstance(recording.get("start_offset_s"), (int, float)):
+                recording = dict(recording)
+                recording["start_offset_s"] = 0.0
+                item.recording = recording
+                self._schedule_save()
+            return item.recording
 
         _LOGGER.debug(
             "Resolving recording for item %s (camera=%s label=%s start=%s end=%s final_attempt=%s)",
@@ -599,21 +650,30 @@ class ReolinkFeedManager:
             item.end_ts,
             final_attempt,
         )
-        media_content_id = await self._async_find_recording_media_content_id(item)
+        match = await self._async_find_recording_match(item)
         cache_error: str | None = None
-        if media_content_id:
-            _LOGGER.debug("Matched media content id for item %s: %s", item.id, media_content_id)
-            local_url, cache_error = (
-                await self._async_cache_recording_file(item, media_content_id)
+        if match is not None:
+            _LOGGER.debug("Matched media content id for item %s: %s", item.id, match.media_content_id)
+            local_url, cache_error, cached_source_url = (
+                await self._async_cache_recording_file(
+                    item,
+                    match.media_content_id,
+                    force_download=force_download,
+                    clip_start=match.clip_start,
+                    clip_end=match.clip_end,
+                )
                 if item.end_ts is not None
-                else (None, "open_item")
+                else (None, "open_item", None)
             )
             if local_url:
-                item.recording = {
-                    "status": "linked",
-                    "local_url": local_url,
-                    "resolved_at": datetime.now().astimezone().isoformat(),
-                }
+                item.recording = _build_linked_recording(
+                    local_url,
+                    clip_start=match.clip_start,
+                    clip_end=match.clip_end,
+                    event_start=item.start_dt,
+                    media_content_id=match.media_content_id,
+                    source_url=cached_source_url,
+                )
                 self._cancel_recording_resolution(item.id)
                 self._schedule_save()
                 _LOGGER.debug("Recording cached for item %s: %s", item.id, local_url)
@@ -621,12 +681,12 @@ class ReolinkFeedManager:
             _LOGGER.debug(
                 "Failed to cache matched media content for item %s (media_content_id=%s reason=%s)",
                 item.id,
-                media_content_id,
+                match.media_content_id,
                 cache_error or "-",
             )
 
         if final_attempt:
-            if media_content_id:
+            if match is not None:
                 item.recording = {
                     "status": "download_failed",
                     "error": cache_error or "download_failed",
@@ -721,7 +781,7 @@ class ReolinkFeedManager:
         await self._async_refresh_item_asset_size(item)
         await self._async_enforce_storage_limit()
 
-    async def _async_find_recording_media_content_id(self, item: DetectionItem) -> str | None:
+    async def _async_find_recording_match(self, item: DetectionItem) -> RecordingMatch | None:
         label_title = _recording_label_title(item.label)
         if label_title is None:
             return None
@@ -800,7 +860,7 @@ class ReolinkFeedManager:
 
         day_nodes = _select_day_nodes(days_root.children or [], day_candidates)
         _LOGGER.debug("Found %s candidate day nodes for item %s", len(day_nodes), item.id)
-        best: tuple[int, int, int, float, float, float, str] | None = None
+        best: tuple[tuple[int, int, int, float, float, float, str], RecordingMatch] | None = None
         debug_logged = 0
         debug_suppressed = 0
         debug_cap = 60
@@ -892,8 +952,9 @@ class ReolinkFeedManager:
                     debug_logged += 1
                 else:
                     debug_suppressed += 1
-                if best is None or score > best:
-                    best = score
+                candidate_match = RecordingMatch(child.media_content_id, clip_start, clip_end)
+                if best is None or score > best[0]:
+                    best = (score, candidate_match)
 
         if debug_suppressed > 0:
             _LOGGER.debug(
@@ -905,9 +966,10 @@ class ReolinkFeedManager:
         if best is None:
             _LOGGER.debug("No matching clip candidate found for item %s", item.id)
             return None
-        if best[3] <= 0:
+        best_score, best_match = best
+        if best_score[3] <= 0:
             # If no overlap, only accept a near-start match within padded window.
-            nearest = -best[5]
+            nearest = -best_score[5]
             max_nearest = max(
                 RECORDING_WINDOW_START_PAD_SECONDS + RECORDING_WINDOW_END_PAD_SECONDS,
                 RECORDING_MAX_NEAREST_START_SECONDS,
@@ -923,15 +985,15 @@ class ReolinkFeedManager:
         _LOGGER.debug(
             "Selected clip for item %s: media_content_id=%s contains_start=%s contains_interval=%s early_bonus=%s overlap=%.1fs late_start=%.1fs start_delta=%.1fs",
             item.id,
-            best[6],
-            best[0],
-            best[1],
-            best[2],
-            best[3],
-            -best[4],
-            -best[5],
+            best_match.media_content_id,
+            best_score[0],
+            best_score[1],
+            best_score[2],
+            best_score[3],
+            -best_score[4],
+            -best_score[5],
         )
-        return best[6]
+        return best_match
 
     async def _async_cache_recordings_for_items(self, items: list[DetectionItem]) -> None:
         eligible_items = [
@@ -951,13 +1013,19 @@ class ReolinkFeedManager:
         await asyncio.gather(*[_cache_one(item) for item in eligible_items])
 
     async def _async_cache_recording_file(
-        self, item: DetectionItem, media_content_id: str
-    ) -> tuple[str | None, str | None]:
-        relative = _recording_relative_path_for_item(item)
+        self,
+        item: DetectionItem,
+        media_content_id: str,
+        *,
+        force_download: bool = False,
+        clip_start: datetime | None = None,
+        clip_end: datetime | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        relative = _recording_relative_path_for_item(item, clip_start=clip_start, clip_end=clip_end)
         absolute = self._www_root / relative
-        if absolute.exists():
+        if absolute.exists() and not force_download:
             await self._async_refresh_item_asset_size(item)
-            return f"/local/{relative.as_posix()}", None
+            return f"/local/{relative.as_posix()}", None, None
 
         try:
             resolved = await async_resolve_media(
@@ -965,11 +1033,11 @@ class ReolinkFeedManager:
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to resolve media for local cache (%s): %s", item.id, err)
-            return None, "resolve_failed"
+            return None, "resolve_failed", None
 
         media_url = self._make_absolute_ha_url(self._sign_ha_path_if_needed(resolved.url))
         if not media_url:
-            return None, "invalid_url"
+            return None, "invalid_url", None
 
         session = async_get_clientsession(self.hass, verify_ssl=False)
         payload: bytes | None = None
@@ -1013,16 +1081,16 @@ class ReolinkFeedManager:
                 break
 
         if not payload:
-            return None, last_error or "empty_payload"
+            return None, last_error or "empty_payload", media_url
 
         try:
             await self.hass.async_add_executor_job(_write_snapshot_file, absolute, payload)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Failed to persist recording cache (%s): %s", item.id, err)
-            return None, "persist_failed"
+            return None, "persist_failed", media_url
         await self._async_refresh_item_asset_size(item)
         await self._async_enforce_storage_limit()
-        return f"/local/{relative.as_posix()}", None
+        return f"/local/{relative.as_posix()}", None, media_url
 
     def _sign_ha_path_if_needed(self, url: str) -> str:
         if not url.startswith("/"):
@@ -1457,6 +1525,67 @@ def _recording_is_linked(recording: dict[str, Any] | None) -> bool:
     return (recording or {}).get("status") == "linked"
 
 
+def _recording_needs_event_timing(
+    recording: dict[str, Any] | None, *, force_refresh: bool = False
+) -> bool:
+    if force_refresh:
+        return True
+    if not _recording_is_linked(recording):
+        return True
+    local_url = (recording or {}).get("local_url")
+    if not isinstance(local_url, str) or not local_url:
+        return True
+    return not isinstance((recording or {}).get("start_offset_s"), (int, float))
+
+
+def _should_force_recording_download(
+    recording: dict[str, Any] | None, *, final_attempt: bool
+) -> bool:
+    if not final_attempt:
+        return False
+    if not _recording_is_linked(recording):
+        return False
+    local_url = (recording or {}).get("local_url")
+    return isinstance(local_url, str) and bool(local_url)
+
+
+def _event_playback_offset_seconds(
+    event_start: datetime, clip_start: datetime, clip_end: datetime
+) -> float:
+    """Return a safe seek offset into a clip for event playback."""
+    clip_duration = max(0.0, (clip_end - clip_start).total_seconds())
+    if clip_duration <= 0.0:
+        return 0.0
+    raw_offset = (event_start - clip_start).total_seconds()
+    clamped = min(max(raw_offset, 0.0), max(0.0, clip_duration - 1.0))
+    return round(clamped, 3)
+
+
+def _build_linked_recording(
+    local_url: str,
+    *,
+    clip_start: datetime,
+    clip_end: datetime,
+    event_start: datetime,
+    media_content_id: str | None = None,
+    source_url: str | None = None,
+) -> dict[str, Any]:
+    """Build linked recording payload with clip timing metadata."""
+    payload = {
+        "status": "linked",
+        "local_url": local_url,
+        "resolved_at": datetime.now().astimezone().isoformat(),
+        "clip_start_ts": clip_start.isoformat(),
+        "clip_end_ts": clip_end.isoformat(),
+        "start_offset_s": _event_playback_offset_seconds(event_start, clip_start, clip_end),
+    }
+    if media_content_id:
+        payload["media_content_id"] = media_content_id
+    if source_url:
+        payload["source_url"] = source_url
+    return payload
+
+
 def _events_overlap_or_close(
     a_start: datetime,
     a_end: datetime,
@@ -1560,12 +1689,24 @@ def _cached_recording_paths_for_item(www_root: Path, item: DetectionItem) -> lis
     return [www_root / relative]
 
 
-def _recording_relative_path_for_item(item: DetectionItem) -> Path:
-    started_local = item.start_dt.astimezone()
+def _recording_relative_path_for_item(
+    item: DetectionItem, *, clip_start: datetime | None = None, clip_end: datetime | None = None
+) -> Path:
+    started_local = (clip_start or item.start_dt).astimezone()
     camera_slug = slugify(item.camera_name) or "camera"
     day_folder = started_local.strftime("%Y-%m-%d")
-    filename = f"{started_local.strftime('%H%M%S')}_{item.label}.mp4"
+    clip_duration_s = max(1, int((clip_end - clip_start).total_seconds())) if clip_start and clip_end else None
+    duration_token = _duration_seconds_to_token(clip_duration_s or item.duration_s or 0)
+    filename = f"{started_local.strftime('%H%M%S')}_{duration_token}_{item.label}.mp4"
     return Path("reolink_feed") / camera_slug / day_folder / filename
+
+
+def _duration_seconds_to_token(total_seconds: int | float | None) -> str:
+    seconds = max(0, int(total_seconds or 0))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    return f"{hours:02d}{minutes:02d}{secs:02d}"
 
 
 def _candidate_legacy_snapshot_roots(hass: HomeAssistant) -> list[Path]:

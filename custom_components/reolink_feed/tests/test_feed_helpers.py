@@ -5,18 +5,23 @@ from types import SimpleNamespace
 
 from custom_components.reolink_feed.const import MERGE_WINDOW_SECONDS, RECORDING_DEFAULT_CLIP_DURATION_SECONDS
 from custom_components.reolink_feed.feed import (
+    _build_linked_recording,
     _build_detection_items_for_entity,
     _camera_name_from_state,
     _clip_bounds_from_title,
     _duration_token_to_seconds,
+    _event_playback_offset_seconds,
     _find_matching_item_index,
     _merge_existing_item,
     _merge_rebuilt_with_existing_items,
+    _recording_needs_event_timing,
     _events_overlap_or_close,
     _merge_detection_items,
     _overlap_seconds,
     _parse_day_from_media_node,
     _recording_label_title,
+    _recording_relative_path_for_item,
+    _should_force_recording_download,
     _select_day_nodes,
     _select_low_resolution_node,
 )
@@ -237,6 +242,85 @@ def test_clip_and_overlap_happy_path() -> None:
 def test_label_title_and_resolution_selection_happy_path() -> None:
     assert _recording_label_title("person") == "Person"
     assert _recording_label_title("pet") == "Pet"
+
+
+def test_event_playback_offset_seconds_clamps_to_clip_bounds() -> None:
+    clip_start = datetime(2026, 2, 20, 8, 23, 38, tzinfo=timezone.utc)
+    clip_end = datetime(2026, 2, 20, 8, 23, 59, tzinfo=timezone.utc)
+
+    assert _event_playback_offset_seconds(clip_start - timedelta(seconds=4), clip_start, clip_end) == 0.0
+    assert _event_playback_offset_seconds(clip_start + timedelta(seconds=4), clip_start, clip_end) == 4.0
+    # Clamp near the tail to avoid seeking beyond available media.
+    assert _event_playback_offset_seconds(clip_end + timedelta(seconds=9), clip_start, clip_end) == 20.0
+
+
+def test_build_linked_recording_includes_clip_timing_metadata() -> None:
+    event_start = datetime(2026, 2, 20, 8, 23, 42, tzinfo=timezone.utc)
+    clip_start = datetime(2026, 2, 20, 8, 23, 38, tzinfo=timezone.utc)
+    clip_end = datetime(2026, 2, 20, 8, 23, 59, tzinfo=timezone.utc)
+
+    recording = _build_linked_recording(
+        "/local/reolink_feed/camera/2026-02-20/082338_person.mp4",
+        clip_start=clip_start,
+        clip_end=clip_end,
+        event_start=event_start,
+        media_content_id="media-source://reolink/FILE|abc",
+        source_url="http://localhost:8123/api/reolink/video/abc",
+    )
+
+    assert recording["status"] == "linked"
+    assert recording["local_url"].endswith(".mp4")
+    assert recording["clip_start_ts"] == clip_start.isoformat()
+    assert recording["clip_end_ts"] == clip_end.isoformat()
+    assert recording["start_offset_s"] == 4.0
+    assert recording["media_content_id"] == "media-source://reolink/FILE|abc"
+    assert recording["source_url"] == "http://localhost:8123/api/reolink/video/abc"
+
+
+def test_recording_needs_event_timing_detection() -> None:
+    assert _recording_needs_event_timing(None)
+    assert _recording_needs_event_timing({"status": "pending"})
+    assert _recording_needs_event_timing({"status": "linked", "local_url": "/local/x.mp4"})
+    assert not _recording_needs_event_timing(
+        {"status": "linked", "local_url": "/local/x.mp4", "start_offset_s": 3.2}
+    )
+    assert _recording_needs_event_timing(
+        {"status": "linked", "local_url": "/local/x.mp4", "start_offset_s": 3.2},
+        force_refresh=True,
+    )
+
+
+def test_should_force_recording_download_only_for_manual_linked_reset() -> None:
+    assert not _should_force_recording_download(None, final_attempt=False)
+    assert not _should_force_recording_download({"status": "pending"}, final_attempt=True)
+    assert not _should_force_recording_download({"status": "linked"}, final_attempt=True)
+    assert not _should_force_recording_download(
+        {"status": "linked", "local_url": "/local/x.mp4"}, final_attempt=False
+    )
+    assert _should_force_recording_download(
+        {"status": "linked", "local_url": "/local/x.mp4"}, final_attempt=True
+    )
+
+
+def test_recording_relative_path_uses_clip_start_and_duration_token() -> None:
+    event_start = datetime(2026, 2, 20, 9, 26, 2, tzinfo=timezone.utc)
+    item = DetectionItem(
+        id="x",
+        start_ts=event_start.isoformat(),
+        end_ts=(event_start + timedelta(seconds=21)).isoformat(),
+        duration_s=21,
+        label="person",
+        source_entity_id="binary_sensor.deurbel_person",
+        camera_name="Deurbel",
+        snapshot_url=None,
+        recording={"status": "pending"},
+    )
+    clip_start = datetime(2026, 2, 20, 10, 25, 25, tzinfo=timezone(timedelta(hours=1)))
+    clip_end = clip_start + timedelta(seconds=21)
+
+    relative = _recording_relative_path_for_item(item, clip_start=clip_start, clip_end=clip_end)
+
+    assert relative.as_posix().endswith("reolink_feed/deurbel/2026-02-20/102525_000021_person.mp4")
 
     nodes = [
         SimpleNamespace(title="High Resolution", media_content_id="media-source://reolink/CAM|main"),

@@ -489,14 +489,22 @@ class ReolinkFeedCard extends HTMLElement {
     if (!this._infoDialog.open) return;
     const infoVideoEl = this.shadowRoot?.querySelector("video.info-video");
     if (!infoVideoEl) return;
-    const initialOffsetSeconds = 5;
+    const currentItem = this._currentInfoItem();
+    const requestedOffset = Number(currentItem?.recording?.start_offset_s);
+    const initialOffsetSeconds =
+      Number.isFinite(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
     let initialSeekApplied = false;
     const applyInitialSeek = () => {
       if (initialSeekApplied) return;
       const duration = Number(infoVideoEl.duration);
-      if (!Number.isFinite(duration) || duration <= initialOffsetSeconds) return;
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      if (initialOffsetSeconds <= 0) {
+        initialSeekApplied = true;
+        return;
+      }
+      const safeOffset = Math.min(initialOffsetSeconds, Math.max(0, duration - 0.25));
       try {
-        infoVideoEl.currentTime = initialOffsetSeconds;
+        infoVideoEl.currentTime = safeOffset;
         initialSeekApplied = true;
       } catch (_err) {
         // Some browsers may reject early seek before enough media is buffered.
