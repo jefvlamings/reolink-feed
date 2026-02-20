@@ -41,7 +41,8 @@ const CARD_I18N = {
     download_failed: "Download failed",
     pending: "Pending",
     event: "Event",
-    tap_for_controls: "Tap for controls",
+    image: "Image",
+    video: "Video",
   },
   nl: {
     person: "Persoon",
@@ -77,7 +78,8 @@ const CARD_I18N = {
     download_failed: "Download mislukt",
     pending: "In behandeling",
     event: "Event",
-    tap_for_controls: "Tik voor bediening",
+    image: "Afbeelding",
+    video: "Video",
   },
 };
 
@@ -440,6 +442,11 @@ class ReolinkFeedCard extends HTMLElement {
     });
   }
 
+  _formatWeekday(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleString([], { weekday: "long" });
+  }
+
   _formatStartEndLine(item) {
     if (!item?.start_ts) return "-";
     const start = new Date(item.start_ts);
@@ -455,7 +462,7 @@ class ReolinkFeedCard extends HTMLElement {
 
   _infoHeaderTitle(item) {
     if (!item) return this._t("detection_info");
-    return `${item.camera_name || "-"} - ${this._formatWeekdayAndTime(item.start_ts) || "-"} (${this._formatDuration(item.duration_s)})`;
+    return `${this._formatTime(item.start_ts) || "-"} (${this._formatDuration(item.duration_s)}) - ${this._formatWeekday(item.start_ts) || "-"}`;
   }
 
   _infoRecordingFallbackText(status) {
@@ -464,23 +471,109 @@ class ReolinkFeedCard extends HTMLElement {
     return this._t("pending");
   }
 
-  _buildInfoFileLinkHtml(item) {
-    const infoFileHref = this._recordingLinkHref(item);
-    const infoFileName = this._recordingFilename(item);
-    const infoRecordingStatus = item?.recording?.status || "pending";
-    if (infoFileHref && infoFileHref !== "#") {
-      return `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(item)}">${infoFileName}</a>`;
-    }
-    return `<span>${this._infoRecordingFallbackText(infoRecordingStatus)}</span>`;
+  _buildInfoDownloadsHtml(item) {
+    const recordingHref = this._recordingLinkHref(item);
+    const recordingName = this._recordingFilename(item) || "video.mp4";
+    const recordingStatus = item?.recording?.status || "pending";
+    const recordingAvailable = Boolean(recordingHref && recordingHref !== "#");
+    const recordingTitle = recordingAvailable
+      ? this._mediaFileDisplayPath(item)
+      : this._infoRecordingFallbackText(recordingStatus);
+
+    const photoHref = this._snapshotLinkHref(item);
+    const photoName = this._snapshotFilename(item) || "snapshot.jpg";
+    const photoAvailable = Boolean(photoHref && photoHref !== "#");
+    const photoTitle = photoAvailable ? photoHref : this._t("no_snapshot");
+
+    return `
+      <div class="info-downloads">
+        <a
+          class="download-btn${photoAvailable ? "" : " disabled"}"
+          ${photoAvailable ? `href="${photoHref}" download="${photoName}"` : 'href="#" aria-disabled="true" tabindex="-1"'}
+          ${photoAvailable ? `data-download-url="${photoHref}" data-download-name="${photoName}" data-download-label="${this._t("image")}" data-download-kind="image"` : ""}
+          title="${photoTitle}"
+        >
+          <ha-icon icon="mdi:image"></ha-icon>
+          <span>${this._t("image")}</span>
+        </a>
+        <a
+          class="download-btn${recordingAvailable ? "" : " disabled"}"
+          ${recordingAvailable ? `href="${recordingHref}" download="${recordingName}"` : 'href="#" aria-disabled="true" tabindex="-1"'}
+          ${recordingAvailable ? `data-download-url="${recordingHref}" data-download-name="${recordingName}" data-download-label="${this._t("video")}" data-download-kind="video"` : ""}
+          title="${recordingTitle}"
+        >
+          <ha-icon icon="mdi:video"></ha-icon>
+          <span>${this._t("video")}</span>
+        </a>
+      </div>
+    `;
   }
 
-  _buildInfoPhotoLinkHtml(item) {
-    const infoPhotoHref = this._snapshotLinkHref(item);
-    const infoPhotoName = this._snapshotFilename(item);
-    if (infoPhotoHref && infoPhotoHref !== "#") {
-      return `<a href="${infoPhotoHref}" target="_blank" rel="noopener" title="${infoPhotoHref}">${infoPhotoName}</a>`;
+  async _shareOrDownloadAsset(url, fileName, label, kind) {
+    const downloadFallback = () => {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName || "";
+      link.rel = "noopener";
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    };
+    const isLikelyMobile = () => {
+      const ua = navigator?.userAgent || "";
+      const touch = typeof window !== "undefined" && "ontouchstart" in window;
+      const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches;
+      return /iPhone|iPad|iPod|Android/i.test(ua) || (touch && coarse);
+    };
+
+    // Desktop UX: always download directly.
+    if (!isLikelyMobile()) {
+      downloadFallback();
+      return;
     }
-    return `<span title="${infoPhotoHref || ""}">${infoPhotoName || "-"}</span>`;
+
+    const shareApi = navigator?.share;
+    if (!shareApi) {
+      downloadFallback();
+      return;
+    }
+
+    const absoluteUrl = (() => {
+      try {
+        return new URL(url, window.location.origin).toString();
+      } catch (_err) {
+        return url;
+      }
+    })();
+
+    const canShare = navigator?.canShare?.bind(navigator);
+    const title = `${label}`;
+    const text = fileName || label;
+    const mimeType = kind === "image" ? "image/jpeg" : "video/mp4";
+    // iOS Safari is strict about user activation timing.
+    // Share URL first (no async fetch) to keep it inside the tap gesture.
+    try {
+      await navigator.share({ title, text, url: absoluteUrl });
+      return;
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        return;
+      }
+    }
+
+    try {
+      const response = await fetch(url, { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`http_${response.status}`);
+      const blob = await response.blob();
+      const file = new File([blob], fileName || `${kind}.bin`, { type: blob.type || mimeType });
+      if (!canShare || canShare({ files: [file] })) {
+        await navigator.share({ title, text, files: [file] });
+        return;
+      }
+    } catch (_err) {
+      downloadFallback();
+    }
   }
 
   _buildInfoMediaHtml(item) {
@@ -491,7 +584,6 @@ class ReolinkFeedCard extends HTMLElement {
           item && item.recording?.local_url
             ? `
               <video class="info-video" ${controlsActive ? "controls" : ""} autoplay muted playsinline preload="auto" src="${item.recording.local_url}"></video>
-              ${controlsActive ? "" : `<div class="video-tap-hint">${this._t("tap_for_controls")}</div>`}
             `
             : item && item.snapshot_url
               ? `<img class="info-snapshot" src="${item.snapshot_url}" alt="${item.camera_name || this._t("snapshot")}" loading="lazy" />`
@@ -580,8 +672,7 @@ class ReolinkFeedCard extends HTMLElement {
     const mediaSlotEl = this.shadowRoot.querySelector(".info-media-slot");
     const detectionValueEl = this.shadowRoot.querySelector(".info-detection-value");
     const startEndEl = this.shadowRoot.querySelector(".info-start-end");
-    const recordingValueEl = this.shadowRoot.querySelector(".info-recording-value");
-    const photoValueEl = this.shadowRoot.querySelector(".info-photo-value");
+    const downloadsSlotEl = this.shadowRoot.querySelector(".info-downloads-slot");
     const prevInfoButton = this.shadowRoot.querySelector("button.prev-info");
     const nextInfoButton = this.shadowRoot.querySelector("button.next-info");
     const resetInfoButton = this.shadowRoot.querySelector("button.reset-info");
@@ -592,8 +683,7 @@ class ReolinkFeedCard extends HTMLElement {
     if (mediaSlotEl) mediaSlotEl.innerHTML = this._buildInfoMediaHtml(infoItem);
     if (detectionValueEl) detectionValueEl.textContent = this._labelText(infoItem.label);
     if (startEndEl) startEndEl.textContent = this._formatStartEndLine(infoItem);
-    if (recordingValueEl) recordingValueEl.innerHTML = this._buildInfoFileLinkHtml(infoItem);
-    if (photoValueEl) photoValueEl.innerHTML = this._buildInfoPhotoLinkHtml(infoItem);
+    if (downloadsSlotEl) downloadsSlotEl.innerHTML = this._buildInfoDownloadsHtml(infoItem);
 
     const idx = this._currentInfoItemIndex();
     if (prevInfoButton) prevInfoButton.disabled = idx <= 0;
@@ -758,8 +848,7 @@ class ReolinkFeedCard extends HTMLElement {
     const infoLabelIcon = infoItem ? this._labelIconName(infoItem.label) : "mdi:account";
     const infoHeaderTitle = this._infoHeaderTitle(infoItem);
     const infoIsResolving = infoItem ? this._resolvingIds.has(infoItem.id) : false;
-    const infoFileLinkHtml = infoItem ? this._buildInfoFileLinkHtml(infoItem) : "<span>-</span>";
-    const infoPhotoLinkHtml = infoItem ? this._buildInfoPhotoLinkHtml(infoItem) : "<span>-</span>";
+    const infoDownloadsHtml = infoItem ? this._buildInfoDownloadsHtml(infoItem) : "";
     const infoMediaHtml = infoItem ? this._buildInfoMediaHtml(infoItem) : "";
     const infoDialogHtml =
       this._infoDialog.open && infoItem
@@ -794,14 +883,7 @@ class ReolinkFeedCard extends HTMLElement {
             <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("history")}</a>
             <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("logbook")}</a>
           </div>
-          <div>
-            <span><strong>${this._t("recording")}:</strong> </span>
-            <span class="info-recording-value">${infoFileLinkHtml}</span>
-          </div>
-          <div>
-            <span><strong>${this._t("photo")}:</strong> </span>
-            <span class="info-photo-value">${infoPhotoLinkHtml}</span>
-          </div>
+          <div class="info-downloads-slot">${infoDownloadsHtml}</div>
         </div>
           <button slot="secondaryAction" class="reset-info${infoIsResolving ? " resolving" : ""}" type="button" ${infoIsResolving ? "disabled" : ""}>
             <ha-icon class="${infoIsResolving ? "spin" : ""}" icon="${infoIsResolving ? "mdi:loading" : "mdi:arrow-u-left-top"}"></ha-icon>
@@ -860,10 +942,38 @@ class ReolinkFeedCard extends HTMLElement {
           max-height: min(68vh, 560px);
           overflow-y: auto;
           overflow-x: hidden;
+          border-bottom: 1px solid var(--divider-color);
         }
         .info-links { display: flex; gap: 12px; }
         .info-links a, .info-body a { color: var(--primary-color); text-decoration: none; }
         .info-links a:hover, .info-body a:hover { text-decoration: underline; }
+        .info-downloads {
+          display: flex;
+          gap: 10px;
+          width: 100%;
+        }
+        .download-btn {
+          flex: 1 1 50%;
+          min-width: 0;
+          box-sizing: border-box;
+          border: 1px solid var(--divider-color);
+          border-radius: 10px;
+          height: 40px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 0 10px;
+          text-decoration: none;
+          color: var(--primary-text-color);
+          background: transparent;
+        }
+        .download-btn:hover { background: var(--secondary-background-color); text-decoration: none; }
+        .download-btn.disabled {
+          opacity: 0.55;
+          pointer-events: none;
+        }
+        .download-btn ha-icon { --mdc-icon-size: 18px; }
         .info-media-frame {
           width: 100%;
           height: clamp(260px, 40vh, 420px);
@@ -877,21 +987,8 @@ class ReolinkFeedCard extends HTMLElement {
           height: 100%;
           display: block;
         }
-        .info-video { background: #000; object-fit: contain; }
+        .info-video { background: #000; object-fit: cover; }
         .info-snapshot { object-fit: cover; }
-        .video-tap-hint {
-          position: absolute;
-          right: 10px;
-          bottom: 10px;
-          z-index: 4;
-          color: #fff;
-          background: rgba(0, 0, 0, 0.55);
-          border: 1px solid rgba(255,255,255,0.2);
-          border-radius: 999px;
-          font-size: 12px;
-          padding: 4px 10px;
-          pointer-events: none;
-        }
         .info-body .placeholder {
           display: grid;
           place-items: center;
@@ -1017,6 +1114,17 @@ class ReolinkFeedCard extends HTMLElement {
     });
     const infoDialogEl = this.shadowRoot.querySelector("ha-dialog");
     this._setupInfoVideoAutoplay();
+    this.shadowRoot.querySelectorAll(".download-btn[data-download-url]").forEach((el) => {
+      el.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const url = el.getAttribute("data-download-url");
+        if (!url) return;
+        const fileName = el.getAttribute("data-download-name") || "";
+        const label = el.getAttribute("data-download-label") || "";
+        const kind = el.getAttribute("data-download-kind") || "";
+        await this._shareOrDownloadAsset(url, fileName, label, kind);
+      });
+    });
     infoDialogEl?.addEventListener("closed", () => {
       if (this._ignoreDialogCloseEvents > 0) {
         this._ignoreDialogCloseEvents -= 1;
