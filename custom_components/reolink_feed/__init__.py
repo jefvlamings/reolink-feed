@@ -52,6 +52,7 @@ from .feed import ReolinkFeedManager
 
 _LOGGER = logging.getLogger(__name__)
 _LOCAL_CARD_URL_PATH = "/local/reolink-feed-card.js"
+_INTEGRATION_VERSION_CACHE_KEY = f"{DOMAIN}_integration_version"
 
 
 @dataclass(slots=True)
@@ -138,7 +139,8 @@ async def _async_try_add_lovelace_card_resource(hass: HomeAssistant) -> bool:
         return True
 
     await resources.async_get_info()
-    target_url = _card_resource_url()
+    integration_version = await _async_integration_version(hass)
+    target_url = _card_resource_url(integration_version)
     existing_card_item: dict | None = None
     for item in resources.async_items() or []:
         url = str(item.get(CONF_URL, ""))
@@ -157,7 +159,7 @@ async def _async_try_add_lovelace_card_resource(hass: HomeAssistant) -> bool:
         _LOGGER.info("Added Lovelace resource for Reolink Feed card: %s", target_url)
         return True
 
-    if _resource_version_from_url(str(existing_card_item.get(CONF_URL, ""))) == _integration_version():
+    if _resource_version_from_url(str(existing_card_item.get(CONF_URL, ""))) == integration_version:
         return True
 
     item_id = existing_card_item.get(CONF_ID)
@@ -178,8 +180,16 @@ def _integration_version() -> str:
     return str(version) if version else "dev"
 
 
-def _card_resource_url() -> str:
-    return f"{CARD_URL_PATH}?v={_integration_version()}"
+async def _async_integration_version(hass: HomeAssistant) -> str:
+    if cached := hass.data.get(_INTEGRATION_VERSION_CACHE_KEY):
+        return str(cached)
+    version = await hass.async_add_executor_job(_integration_version)
+    hass.data[_INTEGRATION_VERSION_CACHE_KEY] = version
+    return version
+
+
+def _card_resource_url(version: str) -> str:
+    return f"{CARD_URL_PATH}?v={version}"
 
 
 def _resource_version_from_url(url: str) -> str | None:
@@ -291,6 +301,7 @@ async def ws_list_items(
     {
         "type": "reolink_feed/resolve_recording",
         vol.Required("item_id"): cv.string,
+        vol.Optional("final_attempt", default=False): cv.boolean,
     }
 )
 @websocket_api.async_response
@@ -305,7 +316,9 @@ async def ws_resolve_recording(
 
     entry: ReolinkFeedConfigEntry = entries[0]
     try:
-        recording = await entry.runtime_data.manager.async_resolve_recording(msg["item_id"])
+        recording = await entry.runtime_data.manager.async_resolve_recording(
+            msg["item_id"], final_attempt=msg["final_attempt"]
+        )
     except ValueError:
         connection.send_error(msg["id"], "not_found", "item id not found")
         return

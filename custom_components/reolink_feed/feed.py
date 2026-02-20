@@ -43,6 +43,7 @@ from .const import (
     MIN_MAX_STORAGE_GB,
     MIN_RETENTION_HOURS,
     RECORDING_DEFAULT_CLIP_DURATION_SECONDS,
+    RECORDING_MAX_NEAREST_START_SECONDS,
     RECORDING_RETRY_DELAYS_SECONDS,
     RECORDING_WINDOW_END_PAD_SECONDS,
     RECORDING_WINDOW_START_PAD_SECONDS,
@@ -724,6 +725,7 @@ class ReolinkFeedManager:
         label_title = _recording_label_title(item.label)
         if label_title is None:
             return None
+        label_tokens = _recording_label_tokens(item.label)
 
         # Reolink clip titles are wall-clock times in local camera timezone.
         start_dt = item.start_dt.astimezone()
@@ -799,6 +801,9 @@ class ReolinkFeedManager:
         day_nodes = _select_day_nodes(days_root.children or [], day_candidates)
         _LOGGER.debug("Found %s candidate day nodes for item %s", len(day_nodes), item.id)
         best: tuple[int, int, int, float, float, float, str] | None = None
+        debug_logged = 0
+        debug_suppressed = 0
+        debug_cap = 60
         for day_node, day in day_nodes:
             if not day_node.media_content_id:
                 continue
@@ -818,7 +823,7 @@ class ReolinkFeedManager:
             matching_event_dirs = [
                 child
                 for child in children
-                if child.can_expand and (child.title or "").strip().lower() == label_title.lower()
+                if child.can_expand and _title_matches_recording_label(child.title or "", label_tokens)
             ]
             if matching_event_dirs:
                 for event_dir in matching_event_dirs:
@@ -838,7 +843,11 @@ class ReolinkFeedManager:
                         continue
                     file_nodes.extend(event_listing.children or [])
             else:
-                file_nodes.extend(children)
+                file_nodes.extend(
+                    child
+                    for child in children
+                    if (not child.can_expand) and _title_matches_recording_label(child.title or "", label_tokens)
+                )
 
             for child in file_nodes:
                 if not child.media_content_id or child.can_expand:
@@ -863,21 +872,35 @@ class ReolinkFeedManager:
                     -start_distance,
                     child.media_content_id,
                 )
-                _LOGGER.debug(
-                    "Clip candidate for item %s: title=%s start=%s end=%s contains_start=%s contains_interval=%s early_bonus=%s overlap=%.1f late_start=%.1f start_delta=%.1f",
-                    item.id,
-                    child.title or "",
-                    clip_start.isoformat(),
-                    clip_end.isoformat(),
-                    contains_start,
-                    contains_interval,
-                    early_start_bonus,
-                    overlap,
-                    late_start_seconds,
-                    start_distance,
+                should_log_candidate = (
+                    contains_start == 1 or contains_interval == 1 or overlap > 0.0 or debug_logged < debug_cap
                 )
+                if should_log_candidate:
+                    _LOGGER.debug(
+                        "Clip candidate for item %s: title=%s start=%s end=%s contains_start=%s contains_interval=%s early_bonus=%s overlap=%.1f late_start=%.1f start_delta=%.1f",
+                        item.id,
+                        child.title or "",
+                        clip_start.isoformat(),
+                        clip_end.isoformat(),
+                        contains_start,
+                        contains_interval,
+                        early_start_bonus,
+                        overlap,
+                        late_start_seconds,
+                        start_distance,
+                    )
+                    debug_logged += 1
+                else:
+                    debug_suppressed += 1
                 if best is None or score > best:
                     best = score
+
+        if debug_suppressed > 0:
+            _LOGGER.debug(
+                "Suppressed %s low-signal clip candidate debug lines for item %s",
+                debug_suppressed,
+                item.id,
+            )
 
         if best is None:
             _LOGGER.debug("No matching clip candidate found for item %s", item.id)
@@ -885,7 +908,10 @@ class ReolinkFeedManager:
         if best[3] <= 0:
             # If no overlap, only accept a near-start match within padded window.
             nearest = -best[5]
-            max_nearest = RECORDING_WINDOW_START_PAD_SECONDS + RECORDING_WINDOW_END_PAD_SECONDS
+            max_nearest = max(
+                RECORDING_WINDOW_START_PAD_SECONDS + RECORDING_WINDOW_END_PAD_SECONDS,
+                RECORDING_MAX_NEAREST_START_SECONDS,
+            )
             if nearest > max_nearest:
                 _LOGGER.debug(
                     "Best clip rejected for item %s: overlap=0 nearest_start=%.1fs max_nearest=%ss",
@@ -1628,6 +1654,24 @@ def _recording_label_title(label: str) -> str | None:
         "visitor": "Visitor",
     }
     return mapping.get(label)
+
+
+def _recording_label_tokens(label: str) -> tuple[str, ...]:
+    mapping = {
+        "person": ("person",),
+        "pet": ("pet", "animal"),
+        "vehicle": ("vehicle",),
+        "motion": ("motion",),
+        "visitor": ("visitor", "doorbell"),
+    }
+    return mapping.get(label, (label,))
+
+
+def _title_matches_recording_label(title: str, label_tokens: tuple[str, ...]) -> bool:
+    lowered = (title or "").strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in label_tokens)
 
 
 def _select_camera_node(children: list[Any], camera_name: str) -> Any | None:

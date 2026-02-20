@@ -39,6 +39,8 @@ const CARD_I18N = {
     page_size: "Items per page",
     not_found: "Not found",
     download_failed: "Download failed",
+    pending: "Pending",
+    event: "Event",
   },
   nl: {
     person: "Persoon",
@@ -72,6 +74,8 @@ const CARD_I18N = {
     page_size: "Items per pagina",
     not_found: "Niet gevonden",
     download_failed: "Download mislukt",
+    pending: "In behandeling",
+    event: "Event",
   },
 };
 
@@ -262,7 +266,7 @@ class ReolinkFeedCard extends HTMLElement {
     }
   }
 
-  async _refreshRecording(item, showToast = true, showSpinner = true) {
+  async _refreshRecording(item, showToast = true, showSpinner = true, finalAttempt = false) {
     if (!this._hass || !item?.id) return item?.recording || null;
     const keepDialogOpenForItem =
       this._infoDialog.open && this._infoDialog.itemId === item.id;
@@ -277,6 +281,7 @@ class ReolinkFeedCard extends HTMLElement {
       const recording = await this._hass.callWS({
         type: "reolink_feed/resolve_recording",
         item_id: item.id,
+        final_attempt: finalAttempt,
       });
       item.recording = recording;
       if (showToast) {
@@ -304,6 +309,11 @@ class ReolinkFeedCard extends HTMLElement {
 
   _openInfoDialog(item) {
     if (!item?.id) return;
+    if (this._infoDialog.open) {
+      this._infoDialog.itemId = item.id;
+      this._updateInfoDialogInPlace();
+      return;
+    }
     this._infoDialog = { open: true, itemId: item.id };
     window.addEventListener("keydown", this._handleDialogKeyDown);
     this._render();
@@ -320,12 +330,18 @@ class ReolinkFeedCard extends HTMLElement {
     return this._items.findIndex((item) => item.id === this._infoDialog.itemId);
   }
 
+  _currentInfoItem() {
+    if (!this._infoDialog.open) return null;
+    return this._items.find((item) => item.id === this._infoDialog.itemId) || null;
+  }
+
   _openPreviousInfoItem() {
     const idx = this._currentInfoItemIndex();
     if (idx <= 0) return;
     const prevItem = this._items[idx - 1];
     if (!prevItem) return;
-    this._openInfoDialog(prevItem);
+    this._infoDialog.itemId = prevItem.id;
+    this._updateInfoDialogInPlace();
   }
 
   _openNextInfoItem() {
@@ -333,7 +349,8 @@ class ReolinkFeedCard extends HTMLElement {
     if (idx < 0 || idx >= this._items.length - 1) return;
     const nextItem = this._items[idx + 1];
     if (!nextItem) return;
-    this._openInfoDialog(nextItem);
+    this._infoDialog.itemId = nextItem.id;
+    this._updateInfoDialogInPlace();
   }
 
   async _deleteItem(item) {
@@ -393,6 +410,156 @@ class ReolinkFeedCard extends HTMLElement {
       second: "2-digit",
       hour12: false,
     });
+  }
+
+  _formatDate(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleDateString([], {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  }
+
+  _formatWeekdayAndTime(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleString([], {
+      weekday: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+  }
+
+  _formatStartEndLine(item) {
+    if (!item?.start_ts) return "-";
+    const start = new Date(item.start_ts);
+    const end = item?.end_ts
+      ? new Date(item.end_ts)
+      : new Date(start.getTime() + Math.max(0, Number(item?.duration_s) || 0) * 1000);
+    return `${this._formatDate(start.toISOString())} ${this._formatTime(start.toISOString())} - ${this._formatTime(end.toISOString())}`;
+  }
+
+  _infoHeaderTitle(item) {
+    if (!item) return this._t("detection_info");
+    return `${item.camera_name || "-"} - ${this._formatWeekdayAndTime(item.start_ts) || "-"} (${this._formatDuration(item.duration_s)})`;
+  }
+
+  _infoRecordingFallbackText(status) {
+    if (status === "not_found") return this._t("not_found");
+    if (status === "download_failed") return this._t("download_failed");
+    return this._t("pending");
+  }
+
+  _buildInfoFileLinkHtml(item) {
+    const infoFileHref = this._recordingLinkHref(item);
+    const infoFileName = this._recordingFilename(item);
+    const infoRecordingStatus = item?.recording?.status || "pending";
+    if (infoFileHref && infoFileHref !== "#") {
+      return `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(item)}">${infoFileName}</a>`;
+    }
+    return `<span>${this._infoRecordingFallbackText(infoRecordingStatus)}</span>`;
+  }
+
+  _buildInfoPhotoLinkHtml(item) {
+    const infoPhotoHref = this._snapshotLinkHref(item);
+    const infoPhotoName = this._snapshotFilename(item);
+    if (infoPhotoHref && infoPhotoHref !== "#") {
+      return `<a href="${infoPhotoHref}" target="_blank" rel="noopener" title="${infoPhotoHref}">${infoPhotoName}</a>`;
+    }
+    return `<span title="${infoPhotoHref || ""}">${infoPhotoName || "-"}</span>`;
+  }
+
+  _buildInfoMediaHtml(item) {
+    return `
+      <div class="info-media-frame">
+        ${
+          item && item.recording?.local_url
+            ? `<video class="info-video" controls autoplay muted playsinline preload="auto" src="${item.recording.local_url}"></video>`
+            : item && item.snapshot_url
+              ? `<img class="info-snapshot" src="${item.snapshot_url}" alt="${item.camera_name || this._t("snapshot")}" loading="lazy" />`
+              : `<div class="placeholder">${this._t("no_snapshot")}</div>`
+        }
+      </div>
+    `;
+  }
+
+  _setupInfoVideoAutoplay() {
+    if (!this._infoDialog.open) return;
+    const infoVideoEl = this.shadowRoot?.querySelector("video.info-video");
+    if (!infoVideoEl) return;
+    const initialOffsetSeconds = 5;
+    let initialSeekApplied = false;
+    const applyInitialSeek = () => {
+      if (initialSeekApplied) return;
+      const duration = Number(infoVideoEl.duration);
+      if (!Number.isFinite(duration) || duration <= initialOffsetSeconds) return;
+      try {
+        infoVideoEl.currentTime = initialOffsetSeconds;
+        initialSeekApplied = true;
+      } catch (_err) {
+        // Some browsers may reject early seek before enough media is buffered.
+      }
+    };
+    infoVideoEl.muted = true;
+    infoVideoEl.playsInline = true;
+    infoVideoEl.preload = "auto";
+    if (infoVideoEl.readyState >= 1) {
+      applyInitialSeek();
+    } else {
+      infoVideoEl.addEventListener("loadedmetadata", applyInitialSeek, { once: true });
+    }
+    infoVideoEl.load();
+    const playPromise = infoVideoEl.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {
+        // Autoplay may be blocked by browser policy; keep controls for manual start.
+      });
+    }
+  }
+
+  _updateInfoDialogInPlace() {
+    if (!this._infoDialog.open || !this.shadowRoot) return;
+    const dialogEl = this.shadowRoot.querySelector("ha-dialog");
+    const infoItem = this._currentInfoItem();
+    if (!dialogEl || !infoItem) {
+      this._render();
+      return;
+    }
+
+    const titleIconEl = this.shadowRoot.querySelector(".info-title ha-icon");
+    const titleTextEl = this.shadowRoot.querySelector(".info-title-text");
+    const mediaSlotEl = this.shadowRoot.querySelector(".info-media-slot");
+    const detectionValueEl = this.shadowRoot.querySelector(".info-detection-value");
+    const startEndEl = this.shadowRoot.querySelector(".info-start-end");
+    const recordingValueEl = this.shadowRoot.querySelector(".info-recording-value");
+    const photoValueEl = this.shadowRoot.querySelector(".info-photo-value");
+    const prevInfoButton = this.shadowRoot.querySelector("button.prev-info");
+    const nextInfoButton = this.shadowRoot.querySelector("button.next-info");
+    const resetInfoButton = this.shadowRoot.querySelector("button.reset-info");
+    const resetIcon = resetInfoButton?.querySelector("ha-icon");
+
+    titleIconEl?.setAttribute("icon", this._labelIconName(infoItem.label));
+    if (titleTextEl) titleTextEl.textContent = this._infoHeaderTitle(infoItem);
+    if (mediaSlotEl) mediaSlotEl.innerHTML = this._buildInfoMediaHtml(infoItem);
+    if (detectionValueEl) detectionValueEl.textContent = this._labelText(infoItem.label);
+    if (startEndEl) startEndEl.textContent = this._formatStartEndLine(infoItem);
+    if (recordingValueEl) recordingValueEl.innerHTML = this._buildInfoFileLinkHtml(infoItem);
+    if (photoValueEl) photoValueEl.innerHTML = this._buildInfoPhotoLinkHtml(infoItem);
+
+    const idx = this._currentInfoItemIndex();
+    if (prevInfoButton) prevInfoButton.disabled = idx <= 0;
+    if (nextInfoButton) nextInfoButton.disabled = idx >= this._items.length - 1;
+    if (resetInfoButton && resetIcon) {
+      const isResolving = this._resolvingIds.has(infoItem.id);
+      resetInfoButton.classList.toggle("resolving", isResolving);
+      resetInfoButton.disabled = isResolving;
+      resetIcon.setAttribute("icon", isResolving ? "mdi:loading" : "mdi:arrow-u-left-top");
+      resetIcon.classList.toggle("spin", isResolving);
+    }
+
+    this._setupInfoVideoAutoplay();
   }
 
   _mediaFolderDisplayPath(item) {
@@ -541,37 +708,21 @@ class ReolinkFeedCard extends HTMLElement {
     const infoItem = this._infoDialog.open
       ? this._items.find((item) => item.id === this._infoDialog.itemId) || null
       : null;
-    const infoFileHref = infoItem ? this._recordingLinkHref(infoItem) : "";
-    const infoFileName = infoItem ? this._recordingFilename(infoItem) : "";
-    const infoRecordingStatus = infoItem?.recording?.status || "pending";
-    const infoRecordingFallbackText =
-      infoRecordingStatus === "not_found"
-        ? this._t("not_found")
-        : infoRecordingStatus === "download_failed"
-          ? this._t("download_failed")
-          : "-";
-    const infoFileLinkHtml =
-      infoItem && infoFileHref && infoFileHref !== "#"
-        ? `<a href="${infoFileHref}" target="_blank" rel="noopener" title="${this._mediaFileDisplayPath(infoItem)}">${infoFileName}</a>`
-        : `<span>${infoRecordingFallbackText}</span>`;
-    const infoPhotoHref = infoItem ? this._snapshotLinkHref(infoItem) : "";
-    const infoPhotoName = infoItem ? this._snapshotFilename(infoItem) : "";
-    const infoPhotoLinkHtml =
-      infoItem && infoPhotoHref && infoPhotoHref !== "#"
-        ? `<a href="${infoPhotoHref}" target="_blank" rel="noopener" title="${infoPhotoHref}">${infoPhotoName}</a>`
-        : `<span title="${infoPhotoHref || ""}">${infoPhotoName || "-"}</span>`;
-    const infoMediaHtml =
-      infoItem && infoItem.recording?.local_url
-        ? `<video class="info-video" controls autoplay muted playsinline preload="auto" src="${infoItem.recording.local_url}"></video>`
-        : infoItem && infoItem.snapshot_url
-          ? `<img class="info-snapshot" src="${infoItem.snapshot_url}" alt="${infoItem.camera_name || this._t("snapshot")}" loading="lazy" />`
-          : `<div class="placeholder">${this._t("no_snapshot")}</div>`;
+    const infoLabelIcon = infoItem ? this._labelIconName(infoItem.label) : "mdi:account";
+    const infoHeaderTitle = this._infoHeaderTitle(infoItem);
+    const infoIsResolving = infoItem ? this._resolvingIds.has(infoItem.id) : false;
+    const infoFileLinkHtml = infoItem ? this._buildInfoFileLinkHtml(infoItem) : "<span>-</span>";
+    const infoPhotoLinkHtml = infoItem ? this._buildInfoPhotoLinkHtml(infoItem) : "<span>-</span>";
+    const infoMediaHtml = infoItem ? this._buildInfoMediaHtml(infoItem) : "";
     const infoDialogHtml =
       this._infoDialog.open && infoItem
         ? `
       <ha-dialog open scrimClickAction="close" escapeKeyAction="close">
         <div class="info-head">
-          <span>${this._t("detection_info")}</span>
+          <span class="info-title">
+            <ha-icon icon="${infoLabelIcon}"></ha-icon>
+            <span class="info-title-text">${infoHeaderTitle}</span>
+          </span>
           <div class="info-head-actions">
             <button
               class="nav-info prev-info"
@@ -589,26 +740,24 @@ class ReolinkFeedCard extends HTMLElement {
           </div>
         </div>
         <div class="info-body">
-          ${infoMediaHtml}
-          <div><strong>${this._t("camera")}:</strong> ${infoItem.camera_name || "-"}</div>
-          <div><strong>${this._t("timestamp")}:</strong> ${this._formatDateTime(infoItem.start_ts) || "-"}</div>
-          <div><strong>${this._t("duration")}:</strong> ${this._formatDuration(infoItem.duration_s)}</div>
-          <div><strong>${this._t("detection")}:</strong> ${this._labelText(infoItem.label)}</div>
+          <div class="info-media-slot">${infoMediaHtml}</div>
+          <div><strong>${this._t("detection")}:</strong> <span class="info-detection-value">${this._labelText(infoItem.label)}</span></div>
+          <div><strong>${this._t("event")}:</strong> <span class="info-start-end">${this._formatStartEndLine(infoItem)}</span></div>
           <div class="info-links">
             <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("history")}</a>
             <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("logbook")}</a>
           </div>
           <div>
             <span><strong>${this._t("recording")}:</strong> </span>
-            ${infoFileLinkHtml}
+            <span class="info-recording-value">${infoFileLinkHtml}</span>
           </div>
           <div>
             <span><strong>${this._t("photo")}:</strong> </span>
-            ${infoPhotoLinkHtml}
+            <span class="info-photo-value">${infoPhotoLinkHtml}</span>
           </div>
         </div>
-          <button slot="secondaryAction" class="reset-info${this._resolvingIds.has(infoItem.id) ? " resolving" : ""}" type="button">
-            <ha-icon icon="mdi:arrow-u-left-top"></ha-icon>
+          <button slot="secondaryAction" class="reset-info${infoIsResolving ? " resolving" : ""}" type="button" ${infoIsResolving ? "disabled" : ""}>
+            <ha-icon class="${infoIsResolving ? "spin" : ""}" icon="${infoIsResolving ? "mdi:loading" : "mdi:arrow-u-left-top"}"></ha-icon>
             <span>${this._t("reset")}</span>
           </button>
           <button slot="primaryAction" class="delete-info" type="button">
@@ -648,24 +797,46 @@ class ReolinkFeedCard extends HTMLElement {
         .line2 { color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 7px; background: rgba(0, 0, 0, 0.40); backdrop-filter: blur(2px); display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
         .empty { color: var(--secondary-text-color); font-size: 13px; padding: 8px 2px; }
         .error { color: var(--error-color); font-size: 12px; white-space: pre-wrap; }
-        ha-dialog { --dialog-content-padding: 0; }
+        ha-dialog {
+          --dialog-content-padding: 0;
+          --mdc-dialog-min-width: min(760px, 94vw);
+          --mdc-dialog-max-width: min(760px, 94vw);
+        }
         .info-head { padding: 14px 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--divider-color); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-        .info-body { padding: 12px 16px; display: grid; gap: 10px; color: var(--primary-text-color); }
+        .info-body {
+          padding: 12px 16px;
+          display: grid;
+          gap: 10px;
+          color: var(--primary-text-color);
+          min-width: min(720px, 90vw);
+          box-sizing: border-box;
+          max-height: min(68vh, 560px);
+          overflow-y: auto;
+          overflow-x: hidden;
+        }
         .info-links { display: flex; gap: 12px; }
         .info-links a, .info-body a { color: var(--primary-color); text-decoration: none; }
         .info-links a:hover, .info-body a:hover { text-decoration: underline; }
-        .info-video { width: 100%; max-height: 280px; border-radius: 8px; border: 1px solid var(--divider-color); background: #000; }
-        .info-snapshot { width: 100%; max-height: 280px; object-fit: cover; border-radius: 8px; border: 1px solid var(--divider-color); }
-        .info-body .placeholder {
+        .info-media-frame {
           width: 100%;
-          max-width: 100%;
-          min-height: 220px;
+          height: clamp(260px, 40vh, 420px);
           border-radius: 8px;
           border: 1px solid var(--divider-color);
+          background: #000;
+          overflow: hidden;
+        }
+        .info-video, .info-snapshot, .info-media-frame .placeholder {
+          width: 100%;
+          height: 100%;
+          display: block;
+        }
+        .info-video { background: #000; object-fit: contain; }
+        .info-snapshot { object-fit: cover; }
+        .info-body .placeholder {
           display: grid;
           place-items: center;
           color: var(--secondary-text-color);
-          background: rgba(255,255,255,0.03);
+          background: rgba(255,255,255,0.05);
           font-size: 13px;
           box-sizing: border-box;
           overflow-wrap: anywhere;
@@ -673,6 +844,20 @@ class ReolinkFeedCard extends HTMLElement {
           padding: 8px;
         }
         .info-head-actions { display: inline-flex; align-items: center; gap: 8px; }
+        .info-title {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+        .info-title ha-icon { --mdc-icon-size: 20px; flex: 0 0 auto; }
+        .info-title span {
+          display: block;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
         .close-info-top { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         .close-info-top:hover { background: var(--secondary-background-color); }
         .nav-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
@@ -682,6 +867,9 @@ class ReolinkFeedCard extends HTMLElement {
         .reset-info, .delete-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 34px; padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
         .reset-info:hover { background: var(--secondary-background-color); }
         .reset-info.resolving { opacity: 0.7; }
+        .reset-info:disabled { cursor: default; }
+        .spin { animation: rf-spin 1s linear infinite; }
+        @keyframes rf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .delete-info { border-color: #c03b3b; color: #d64545; }
         .delete-info:hover { background: rgba(214, 69, 69, 0.1); }
         .reset-info ha-icon, .delete-info ha-icon { --mdc-icon-size: 16px; }
@@ -756,54 +944,25 @@ class ReolinkFeedCard extends HTMLElement {
     const resetInfoButton = this.shadowRoot.querySelector("button.reset-info");
     resetInfoButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
-      if (!infoItem) return;
-      this._refreshRecording(infoItem, true);
+      const currentInfoItem = this._currentInfoItem();
+      if (!currentInfoItem) return;
+      this._refreshRecording(currentInfoItem, true, true, true);
     });
     const deleteInfoButton = this.shadowRoot.querySelector("button.delete-info");
     deleteInfoButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
-      if (!infoItem) return;
-      this._deleteItem(infoItem);
+      const currentInfoItem = this._currentInfoItem();
+      if (!currentInfoItem) return;
+      this._deleteItem(currentInfoItem);
     });
     const infoDialogEl = this.shadowRoot.querySelector("ha-dialog");
-    const dialogItemIdAtRender = infoItem?.id || "";
-    const infoVideoEl = this.shadowRoot.querySelector("video.info-video");
-    if (this._infoDialog.open && infoVideoEl) {
-      const initialOffsetSeconds = 5;
-      let initialSeekApplied = false;
-      const applyInitialSeek = () => {
-        if (initialSeekApplied) return;
-        const duration = Number(infoVideoEl.duration);
-        if (!Number.isFinite(duration) || duration <= initialOffsetSeconds) return;
-        try {
-          infoVideoEl.currentTime = initialOffsetSeconds;
-          initialSeekApplied = true;
-        } catch (_err) {
-          // Some browsers may reject early seek before enough media is buffered.
-        }
-      };
-      infoVideoEl.muted = true;
-      infoVideoEl.playsInline = true;
-      infoVideoEl.preload = "auto";
-      if (infoVideoEl.readyState >= 1) {
-        applyInitialSeek();
-      } else {
-        infoVideoEl.addEventListener("loadedmetadata", applyInitialSeek, { once: true });
-      }
-      infoVideoEl.load();
-      const playPromise = infoVideoEl.play();
-      if (playPromise && typeof playPromise.catch === "function") {
-        playPromise.catch(() => {
-          // Autoplay may be blocked by browser policy; keep controls for manual start.
-        });
-      }
-    }
+    this._setupInfoVideoAutoplay();
     infoDialogEl?.addEventListener("closed", () => {
       if (this._ignoreDialogCloseEvents > 0) {
         this._ignoreDialogCloseEvents -= 1;
         return;
       }
-      if (this._infoDialog.open && this._infoDialog.itemId === dialogItemIdAtRender) {
+      if (this._infoDialog.open) {
         this._closeInfoDialog();
       }
     });
@@ -812,7 +971,7 @@ class ReolinkFeedCard extends HTMLElement {
         this._ignoreDialogCloseEvents -= 1;
         return;
       }
-      if (this._infoDialog.open && this._infoDialog.itemId === dialogItemIdAtRender) {
+      if (this._infoDialog.open) {
         this._closeInfoDialog();
       }
     });
