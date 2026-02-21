@@ -1005,9 +1005,7 @@ class ReolinkFeedCard extends HTMLElement {
               <span class="overlay top-left">
                 ${this._labelIcon(item.label)}
               </span>
-              <span class="overlay bottom-left">
-                <span class="line2">${this._formatTime(item.start_ts)} (${this._formatDuration(item.duration_s)})</span>
-              </span>
+              <span class="overlay bottom-left line2">${this._formatTime(item.start_ts)} (${this._formatDuration(item.duration_s)})</span>
             </button>
           </li>
         `;
@@ -1095,12 +1093,14 @@ class ReolinkFeedCard extends HTMLElement {
         .timeline-marker { position: absolute; top: calc(50% - 18px); transform: translate(-50%, -50%); width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(210,210,210,0.88); color: rgba(28,28,28,0.95); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
         .timeline-marker::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%); width: 1px; height: 9px; background: rgba(255,255,255,0.35); pointer-events: none; }
         .timeline-marker:hover { background: rgba(235,235,235,0.96); color: #111; }
+        .timeline-marker.link-hover { background: #fff; color: #111; }
         .timeline-marker ha-icon { --mdc-icon-size: 12px; pointer-events: none; }
         .timeline-marker.cluster { font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; }
         .cluster-count { pointer-events: none; }
         .timeline-cluster-expanded { position: absolute; top: calc(50% - 18px); transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 999px; background: rgba(20,20,20,0.85); border: 1px solid rgba(255,255,255,0.28); z-index: 5; }
         .timeline-expanded-item { width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(210,210,210,0.96); color: rgba(28,28,28,0.95); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
         .timeline-expanded-item:hover { background: #fff; color: #111; }
+        .timeline-expanded-item.link-hover { background: #fff; color: #111; }
         .timeline-expanded-item ha-icon { --mdc-icon-size: 12px; pointer-events: none; }
         .timeline-expanded-close { width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(255,255,255,0.16); color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; font-size: 12px; line-height: 1; }
         .timeline-expanded-close:hover { background: rgba(255,255,255,0.28); }
@@ -1113,14 +1113,17 @@ class ReolinkFeedCard extends HTMLElement {
         .item { position: relative; padding: 0; border-radius: 10px; overflow: hidden; background: rgba(255, 255, 255, 0.04); }
         .thumb { position: relative; display: block; width: 100%; height: clamp(140px, 22vw, 190px); overflow: hidden; border-radius: 10px; background: #111; border: 1px solid var(--divider-color); padding: 0; cursor: pointer; appearance: none; -webkit-appearance: none; }
         .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .thumb::before { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), inset 0 -48px 40px rgba(0,0,0,0.45), inset 0 40px 28px rgba(0,0,0,0.30); pointer-events: none; z-index: 1; }
+        .thumb::before { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+        .thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-sizing: border-box; border: 2px solid transparent; pointer-events: none; z-index: 4; transition: border-color 120ms ease; }
+        .thumb:hover::after { border-color: rgba(255,255,255,0.9); }
+        .thumb.link-hover::after { border-color: rgba(255,255,255,0.9); }
         .overlay { position: absolute; z-index: 3; display: inline-flex; align-items: center; }
         .overlay.top-left { top: 8px; left: 8px; }
         .overlay.bottom-left { left: 8px; bottom: 8px; max-width: calc(100% - 16px); }
         .placeholder { color: #ddd; font-size: 11px; padding: 8px; }
-        .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(2px); }
-        .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; }
-        .line2 { color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 7px; background: rgba(0, 0, 0, 0.40); backdrop-filter: blur(2px); display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
+        .label-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
+        .label-icon ha-icon { --mdc-icon-size: 18px; color: #fff; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.95)) drop-shadow(0 0 7px rgba(0,0,0,0.55)); }
+        .line2 { color: rgba(255,255,255,0.95); font-size: 12px; font-weight: 500; text-shadow: 0 1px 2px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.55); display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
         .empty { color: var(--secondary-text-color); font-size: 13px; padding: 8px 2px; }
         .error { color: var(--error-color); font-size: 12px; white-space: pre-wrap; }
         ha-dialog {
@@ -1261,6 +1264,33 @@ class ReolinkFeedCard extends HTMLElement {
       </ha-card>
       ${infoDialogHtml}
     `;
+    const setTimelineHoverState = (itemId, hovered) => {
+      if (!itemId) return;
+      this.shadowRoot.querySelectorAll(".timeline-marker[data-timeline-ids]").forEach((marker) => {
+        const idsRaw = marker.getAttribute("data-timeline-ids") || "";
+        const ids = idsRaw
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean);
+        marker.classList.toggle("link-hover", hovered && ids.includes(itemId));
+      });
+      this.shadowRoot.querySelectorAll(".timeline-expanded-item[data-timeline-id]").forEach((marker) => {
+        marker.classList.toggle(
+          "link-hover",
+          hovered && marker.getAttribute("data-timeline-id") === itemId,
+        );
+      });
+    };
+    const setThumbHoverState = (itemIds, hovered) => {
+      if (!itemIds?.length) return;
+      const idSet = new Set(itemIds);
+      this.shadowRoot.querySelectorAll("li.item[data-id]").forEach((itemEl) => {
+        const itemId = itemEl.getAttribute("data-id");
+        const thumb = itemEl.querySelector("button.thumb");
+        if (!itemId || !thumb) return;
+        thumb.classList.toggle("link-hover", hovered && idSet.has(itemId));
+      });
+    };
 
     this.shadowRoot.querySelectorAll("li.item").forEach((el) => {
       const id = el.getAttribute("data-id");
@@ -1270,6 +1300,8 @@ class ReolinkFeedCard extends HTMLElement {
       const thumb = el.querySelector("button.thumb");
 
       if (thumb) {
+        thumb.addEventListener("mouseenter", () => setTimelineHoverState(id, true));
+        thumb.addEventListener("mouseleave", () => setTimelineHoverState(id, false));
         thumb.addEventListener("click", (ev) => {
           ev.preventDefault();
           this._openFromThumbnail(item);
@@ -1286,17 +1318,23 @@ class ReolinkFeedCard extends HTMLElement {
       });
     });
     this.shadowRoot.querySelectorAll(".timeline-marker").forEach((el) => {
+      const ids = (el.getAttribute("data-timeline-ids") || "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+      el.addEventListener("mouseenter", () => setThumbHoverState(ids, true));
+      el.addEventListener("mouseleave", () => setThumbHoverState(ids, false));
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
         const idsRaw = el.getAttribute("data-timeline-ids") || "";
-        const ids = idsRaw
+        const markerIds = idsRaw
           .split(",")
           .map((id) => id.trim())
           .filter(Boolean);
-        const id = ids[0];
+        const id = markerIds[0];
         if (!id) return;
-        if (ids.length > 1) {
-          const clusterKey = ids.join(",");
+        if (markerIds.length > 1) {
+          const clusterKey = markerIds.join(",");
           this._expandedClusterKey = this._expandedClusterKey === clusterKey ? "" : clusterKey;
           this._render();
           return;
@@ -1307,11 +1345,16 @@ class ReolinkFeedCard extends HTMLElement {
       });
     });
     this.shadowRoot.querySelectorAll(".timeline-expanded-item").forEach((el) => {
+      const id = el.getAttribute("data-timeline-id");
+      if (id) {
+        el.addEventListener("mouseenter", () => setThumbHoverState([id], true));
+        el.addEventListener("mouseleave", () => setThumbHoverState([id], false));
+      }
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
-        const id = el.getAttribute("data-timeline-id");
-        if (!id) return;
-        const item = this._items.find((x) => x.id === id);
+        const itemId = el.getAttribute("data-timeline-id");
+        if (!itemId) return;
+        const item = this._items.find((x) => x.id === itemId);
         if (!item) return;
         this._openFromThumbnail(item);
       });
