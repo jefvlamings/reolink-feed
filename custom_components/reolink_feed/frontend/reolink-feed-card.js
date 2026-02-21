@@ -24,7 +24,7 @@ const CARD_I18N = {
     recording: "Recording",
     photo: "Photo",
     go_to_folder: "Go to folder",
-    reset: "Reset",
+    reset: "Refresh",
     delete: "Delete",
     no_detections: "No detections in range.",
     previous: "Previous",
@@ -42,6 +42,8 @@ const CARD_I18N = {
     download_failed: "Download failed",
     pending: "Pending",
     event: "Event",
+    links: "Links",
+    download: "Download",
     image: "Image",
     video: "Video",
   },
@@ -62,7 +64,7 @@ const CARD_I18N = {
     recording: "Opname",
     photo: "Foto",
     go_to_folder: "Ga naar map",
-    reset: "Reset",
+    reset: "Vernieuwen",
     delete: "Verwijderen",
     no_detections: "Geen detecties in bereik.",
     previous: "Vorige",
@@ -80,6 +82,8 @@ const CARD_I18N = {
     download_failed: "Download mislukt",
     pending: "In behandeling",
     event: "Event",
+    links: "Links",
+    download: "Download",
     image: "Afbeelding",
     video: "Video",
   },
@@ -345,7 +349,7 @@ class ReolinkFeedCard extends HTMLElement {
 
   _currentInfoItemIndex() {
     if (!this._infoDialog.open) return -1;
-    return this._items.findIndex((item) => item.id === this._infoDialog.itemId);
+    return this._filteredItems.findIndex((item) => item.id === this._infoDialog.itemId);
   }
 
   _currentInfoItem() {
@@ -356,7 +360,7 @@ class ReolinkFeedCard extends HTMLElement {
   _openPreviousInfoItem() {
     const idx = this._currentInfoItemIndex();
     if (idx <= 0) return;
-    const prevItem = this._items[idx - 1];
+    const prevItem = this._filteredItems[idx - 1];
     if (!prevItem) return;
     this._infoDialog.itemId = prevItem.id;
     this._videoControlsEnabled.delete(prevItem.id);
@@ -365,8 +369,8 @@ class ReolinkFeedCard extends HTMLElement {
 
   _openNextInfoItem() {
     const idx = this._currentInfoItemIndex();
-    if (idx < 0 || idx >= this._items.length - 1) return;
-    const nextItem = this._items[idx + 1];
+    if (idx < 0 || idx >= this._filteredItems.length - 1) return;
+    const nextItem = this._filteredItems[idx + 1];
     if (!nextItem) return;
     this._infoDialog.itemId = nextItem.id;
     this._videoControlsEnabled.delete(nextItem.id);
@@ -496,9 +500,9 @@ class ReolinkFeedCard extends HTMLElement {
     const photoTitle = photoAvailable ? photoHref : this._t("no_snapshot");
 
     return `
-      <div class="info-downloads">
+      <div class="info-downloads-inline">
         <a
-          class="download-btn${photoAvailable ? "" : " disabled"}"
+          class="download-inline${photoAvailable ? "" : " disabled"}"
           ${photoAvailable ? `href="${photoHref}" download="${photoName}"` : 'href="#" aria-disabled="true" tabindex="-1"'}
           ${photoAvailable ? `data-download-url="${photoHref}" data-download-name="${photoName}" data-download-label="${this._t("image")}" data-download-kind="image"` : ""}
           title="${photoTitle}"
@@ -506,8 +510,9 @@ class ReolinkFeedCard extends HTMLElement {
           <ha-icon icon="mdi:image"></ha-icon>
           <span>${this._t("image")}</span>
         </a>
+        <span class="download-sep">|</span>
         <a
-          class="download-btn${recordingAvailable ? "" : " disabled"}"
+          class="download-inline${recordingAvailable ? "" : " disabled"}"
           ${recordingAvailable ? `href="${recordingHref}" download="${recordingName}"` : 'href="#" aria-disabled="true" tabindex="-1"'}
           ${recordingAvailable ? `data-download-url="${recordingHref}" data-download-name="${recordingName}" data-download-label="${this._t("video")}" data-download-kind="video"` : ""}
           title="${recordingTitle}"
@@ -517,6 +522,52 @@ class ReolinkFeedCard extends HTMLElement {
         </a>
       </div>
     `;
+  }
+
+  _buildInfoLinksHtml(item) {
+    const entityId = encodeURIComponent(item?.source_entity_id || "");
+    const end = new Date();
+    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+    const startIso = start.toISOString();
+    const endIso = end.toISOString();
+    const historyPath = `/history?entity_id=${entityId}&start_date=${encodeURIComponent(startIso)}&end_date=${encodeURIComponent(endIso)}`;
+    const logbookPath = `/logbook?entity_id=${entityId}&start_date=${encodeURIComponent(startIso)}&end_date=${encodeURIComponent(endIso)}`;
+    return `
+      <a class="internal-nav-link" href="${historyPath}" data-nav-path="${historyPath}">${this._t("history")}</a>
+      <span class="download-sep">|</span>
+      <a class="internal-nav-link" href="${logbookPath}" data-nav-path="${logbookPath}">${this._t("logbook")}</a>
+    `;
+  }
+
+  _bindInfoActionLinks() {
+    this.shadowRoot.querySelectorAll(".download-inline[data-download-url]").forEach((el) => {
+      if (el.dataset.boundClick === "1") return;
+      el.dataset.boundClick = "1";
+      el.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const url = el.getAttribute("data-download-url");
+        if (!url) return;
+        const fileName = el.getAttribute("data-download-name") || "";
+        const label = el.getAttribute("data-download-label") || "";
+        const kind = el.getAttribute("data-download-kind") || "";
+        await this._shareOrDownloadAsset(url, fileName, label, kind);
+      });
+    });
+    this.shadowRoot.querySelectorAll(".internal-nav-link[data-nav-path]").forEach((el) => {
+      if (el.dataset.boundClick === "1") return;
+      el.dataset.boundClick = "1";
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const path = el.getAttribute("data-nav-path");
+        if (!path) return;
+        if (typeof this._hass?.navigate === "function") {
+          this._hass.navigate(path);
+          return;
+        }
+        window.history.pushState({}, "", path);
+        window.dispatchEvent(new Event("location-changed"));
+      });
+    });
   }
 
   async _shareOrDownloadAsset(url, fileName, label, kind) {
@@ -683,8 +734,9 @@ class ReolinkFeedCard extends HTMLElement {
     const detectionValueEl = this.shadowRoot.querySelector(".info-detection-value");
     const startEndEl = this.shadowRoot.querySelector(".info-start-end");
     const downloadsSlotEl = this.shadowRoot.querySelector(".info-downloads-slot");
-    const prevInfoButton = this.shadowRoot.querySelector("button.prev-info");
-    const nextInfoButton = this.shadowRoot.querySelector("button.next-info");
+    const linksValueEl = this.shadowRoot.querySelector(".info-links");
+    const prevInfoButton = this.shadowRoot.querySelector("button.prev-info-body");
+    const nextInfoButton = this.shadowRoot.querySelector("button.next-info-body");
     const resetInfoButton = this.shadowRoot.querySelector("button.reset-info");
     const resetIcon = resetInfoButton?.querySelector("ha-icon");
 
@@ -693,11 +745,13 @@ class ReolinkFeedCard extends HTMLElement {
     if (mediaSlotEl) mediaSlotEl.innerHTML = this._buildInfoMediaHtml(infoItem);
     if (detectionValueEl) detectionValueEl.textContent = this._labelText(infoItem.label);
     if (startEndEl) startEndEl.textContent = this._formatStartEndLine(infoItem);
+    if (linksValueEl) linksValueEl.innerHTML = this._buildInfoLinksHtml(infoItem);
     if (downloadsSlotEl) downloadsSlotEl.innerHTML = this._buildInfoDownloadsHtml(infoItem);
+    this._bindInfoActionLinks();
 
     const idx = this._currentInfoItemIndex();
     if (prevInfoButton) prevInfoButton.disabled = idx <= 0;
-    if (nextInfoButton) nextInfoButton.disabled = idx >= this._items.length - 1;
+    if (nextInfoButton) nextInfoButton.disabled = idx >= this._filteredItems.length - 1;
     if (resetInfoButton && resetIcon) {
       const isResolving = this._resolvingIds.has(infoItem.id);
       resetInfoButton.classList.toggle("resolving", isResolving);
@@ -988,30 +1042,29 @@ class ReolinkFeedCard extends HTMLElement {
             <span class="info-title-text">${infoHeaderTitle}</span>
           </span>
           <div class="info-head-actions">
-            <button
-              class="nav-info prev-info"
-              type="button"
-              aria-label="${this._t("previous")}"
-              ${this._currentInfoItemIndex() <= 0 ? "disabled" : ""}
-            ><ha-icon icon="mdi:chevron-left"></ha-icon></button>
-            <button
-              class="nav-info next-info"
-              type="button"
-              aria-label="${this._t("next")}"
-              ${this._currentInfoItemIndex() >= this._items.length - 1 ? "disabled" : ""}
-            ><ha-icon icon="mdi:chevron-right"></ha-icon></button>
             <button class="close-info-top" type="button" aria-label="${this._t("close_info_dialog")}">✕</button>
           </div>
         </div>
         <div class="info-body">
           <div class="info-media-slot">${infoMediaHtml}</div>
-          <div><strong>${this._t("detection")}:</strong> <span class="info-detection-value">${this._labelText(infoItem.label)}</span></div>
-          <div><strong>${this._t("event")}:</strong> <span class="info-start-end">${this._formatStartEndLine(infoItem)}</span></div>
-          <div class="info-links">
-            <a href="/history?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("history")}</a>
-            <a href="/logbook?entity_id=${encodeURIComponent(infoItem.source_entity_id || "")}" target="_blank" rel="noopener">${this._t("logbook")}</a>
+          <div class="info-nav-row">
+            <button
+              class="nav-info-body prev-info-body"
+              type="button"
+              aria-label="${this._t("previous")}"
+              ${this._currentInfoItemIndex() <= 0 ? "disabled" : ""}
+            ><ha-icon icon="mdi:chevron-left"></ha-icon><span>${this._t("previous")}</span></button>
+            <button
+              class="nav-info-body next-info-body"
+              type="button"
+              aria-label="${this._t("next")}"
+              ${this._currentInfoItemIndex() >= this._filteredItems.length - 1 ? "disabled" : ""}
+            ><span>${this._t("next")}</span><ha-icon icon="mdi:chevron-right"></ha-icon></button>
           </div>
-          <div class="info-downloads-slot">${infoDownloadsHtml}</div>
+          <div class="info-row"><span class="info-label">${this._t("detection")}:</span><span class="info-value info-detection-value">${this._labelText(infoItem.label)}</span></div>
+          <div class="info-row"><span class="info-label">${this._t("event")}:</span><span class="info-value info-start-end">${this._formatStartEndLine(infoItem)}</span></div>
+          <div class="info-row"><span class="info-label">${this._t("links")}:</span><span class="info-value info-links">${this._buildInfoLinksHtml(infoItem)}</span></div>
+          <div class="info-row"><span class="info-label">${this._t("download")}:</span><span class="info-value info-downloads-slot">${infoDownloadsHtml}</span></div>
         </div>
           <button slot="secondaryAction" class="reset-info${infoIsResolving ? " resolving" : ""}" type="button" ${infoIsResolving ? "disabled" : ""}>
             <ha-icon class="${infoIsResolving ? "spin" : ""}" icon="${infoIsResolving ? "mdi:loading" : "mdi:arrow-u-left-top"}"></ha-icon>
@@ -1087,16 +1140,21 @@ class ReolinkFeedCard extends HTMLElement {
           overflow-y: auto;
           overflow-x: hidden;
           border-bottom: 1px solid var(--divider-color);
+          user-select: text;
+          -webkit-user-select: text;
         }
-        .info-links { display: flex; gap: 12px; }
-        .info-links a, .info-body a { color: var(--primary-color); text-decoration: none; }
-        .info-links a:hover, .info-body a:hover { text-decoration: underline; }
-        .info-downloads {
-          display: flex;
-          gap: 10px;
-          width: 100%;
+        .info-body div, .info-body span, .info-body strong, .info-body a {
+          user-select: text;
+          -webkit-user-select: text;
         }
-        .download-btn {
+        .info-row { display: flex; align-items: baseline; gap: 6px; font-size: 13px; color: var(--primary-text-color); line-height: 1.35; }
+        .info-label { font-weight: 500; color: inherit; }
+        .info-value { color: inherit; }
+        .info-links { display: inline-flex; align-items: center; gap: 6px; }
+        .info-body a { color: inherit; text-decoration: underline; }
+        .info-body a:hover { opacity: 0.9; }
+        .info-nav-row { display: flex; gap: 10px; width: 100%; }
+        .nav-info-body {
           flex: 1 1 50%;
           min-width: 0;
           box-sizing: border-box;
@@ -1108,16 +1166,36 @@ class ReolinkFeedCard extends HTMLElement {
           justify-content: center;
           gap: 8px;
           padding: 0 10px;
-          text-decoration: none;
           color: var(--primary-text-color);
           background: transparent;
+          cursor: pointer;
         }
-        .download-btn:hover { background: var(--secondary-background-color); text-decoration: none; }
-        .download-btn.disabled {
+        .nav-info-body:hover { background: var(--secondary-background-color); }
+        .nav-info-body:disabled { opacity: 0.45; cursor: default; }
+        .nav-info-body ha-icon { --mdc-icon-size: 18px; }
+        .info-downloads-inline {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          color: inherit;
+        }
+        .download-inline {
+          height: 24px;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 0 2px;
+          text-decoration: none;
+          color: inherit;
+          font-size: 13px;
+        }
+        .download-inline:hover { text-decoration: underline; }
+        .download-inline.disabled {
           opacity: 0.55;
           pointer-events: none;
         }
-        .download-btn ha-icon { --mdc-icon-size: 18px; }
+        .download-inline ha-icon { --mdc-icon-size: 14px; }
+        .download-sep { color: inherit; opacity: 0.7; font-size: 12px; }
         .info-media-frame {
           width: 100%;
           height: clamp(260px, 40vh, 420px);
@@ -1161,10 +1239,6 @@ class ReolinkFeedCard extends HTMLElement {
         }
         .close-info-top { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         .close-info-top:hover { background: var(--secondary-background-color); }
-        .nav-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
-        .nav-info:hover { background: var(--secondary-background-color); }
-        .nav-info:disabled { opacity: 0.45; cursor: default; }
-        .nav-info ha-icon { --mdc-icon-size: 20px; }
         .reset-info, .delete-info { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 8px; height: 34px; padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
         .reset-info:hover { background: var(--secondary-background-color); }
         .reset-info.resolving { opacity: 0.7; }
@@ -1287,12 +1361,12 @@ class ReolinkFeedCard extends HTMLElement {
       ev.preventDefault();
       this._closeInfoDialog();
     });
-    const prevInfoButton = this.shadowRoot.querySelector("button.prev-info");
+    const prevInfoButton = this.shadowRoot.querySelector("button.prev-info-body");
     prevInfoButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
       this._openPreviousInfoItem();
     });
-    const nextInfoButton = this.shadowRoot.querySelector("button.next-info");
+    const nextInfoButton = this.shadowRoot.querySelector("button.next-info-body");
     nextInfoButton?.addEventListener("click", (ev) => {
       ev.preventDefault();
       this._openNextInfoItem();
@@ -1313,17 +1387,7 @@ class ReolinkFeedCard extends HTMLElement {
     });
     const infoDialogEl = this.shadowRoot.querySelector("ha-dialog");
     this._setupInfoVideoAutoplay();
-    this.shadowRoot.querySelectorAll(".download-btn[data-download-url]").forEach((el) => {
-      el.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        const url = el.getAttribute("data-download-url");
-        if (!url) return;
-        const fileName = el.getAttribute("data-download-name") || "";
-        const label = el.getAttribute("data-download-label") || "";
-        const kind = el.getAttribute("data-download-kind") || "";
-        await this._shareOrDownloadAsset(url, fileName, label, kind);
-      });
-    });
+    this._bindInfoActionLinks();
     infoDialogEl?.addEventListener("closed", () => {
       if (this._ignoreDialogCloseEvents > 0) {
         this._ignoreDialogCloseEvents -= 1;
